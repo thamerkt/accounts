@@ -1,0 +1,17 @@
+Django==4.2.16
+pymysql
+djangorestframework
+djangorestframework-simplejwt
+dj-rest-auth 
+django-allauth 
+social-auth-app-django
+django-filter
+openpyxl
+django_otp
+psycopg2
+redis 
+django-redis
+pika
+django-oauth-toolkit
+google-auth
+python-dotenv

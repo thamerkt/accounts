@@ -1,0 +1,33 @@
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables files
+.env
+.env.*
+
+# Django migrations
+*/migrations/*.py
+*/migrations/*.pyc
+
+# Django SQLite database (if any)
+db.sqlite3
+
+# Logs
+*.log
+
+# Static files (optional, depends on your setup)
+staticfiles/
+static/
+
+# Media files (optional, depends on your setup)
+media/
+
+# VSCode or IDE configs (optional)
+.vscode/
+.idea/
+
+# Secrets or config files you want to exclude
+settings_local.py
+local_settings.py

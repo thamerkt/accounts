@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  web:
+    build: .
+    container_name: account_service
+    ports:
+      - "8007:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    environment:
+      DJANGO_SETTINGS_MODULE: accounts-service.settings
+      DATABASE_NAME: account_db
+      DATABASE_USER: thamer
+      DATABASE_PASSWORD: thamer4a
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+    volumes:
+      - .:/app
+    restart: always
+
+  db:
+    image: postgres:13  # Updated to PostgreSQL 17
+    container_name: postgres-account
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: account_db
+      POSTGRES_USER: thamer
+      POSTGRES_PASSWORD: thamer4a
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thamer -d account_db"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
+      timeout: 5s
+
+volumes:
+  postgres_data:
