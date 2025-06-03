@@ -146,7 +146,11 @@ def login_user(email, password):
     }
     
     # Send a POST request to the Keycloak token endpoint
-    response = requests.post(f"{settings.KEYCLOAK_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token", data=data)
+    response = requests.post(
+        f"{settings.KEYCLOAK_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
 
     if response.status_code == 200:
         return {"success": True, "token": response.json()}  # Return the access token
