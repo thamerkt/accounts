@@ -490,7 +490,7 @@ class RegisterView(APIView):
         if serializer.is_valid():
             email = serializer.validated_data.get("email")
             password = serializer.validated_data.get("password")
-            username = data.get("username")
+            username = data.get("email")
             role_type = data.get("role")
 
             otp = generate_and_store_otp(email)
