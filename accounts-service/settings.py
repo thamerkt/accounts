@@ -147,11 +147,11 @@ LOGIN_URL = 'keycloak_login'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('PGDATABASE'),
-        'USER': os.environ.get('PGUSER'),
-        'PASSWORD': os.environ.get('PGPASSWORD'),
-        'HOST': os.environ.get('PGHOST'),
-        'PORT': os.environ.get('PGPORT'),
+        'NAME': "accounts_db",  # fallback to your DB name
+        'USER': "postgres",               # fallback username
+        'PASSWORD': "thamer4a",                  # *must be set in env*
+        'HOST': "localhost",  # your internal hostname
+        'PORT':  '5432',                  # default postgres port
     }
 }
 

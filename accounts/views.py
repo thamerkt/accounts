@@ -385,7 +385,7 @@ class VerifyOTPView(APIView):
 
     def post(self, request):
         otp = request.data.get("otp")
-        redis_client = redis.StrictRedis(host='host.docker.internal', port=6379, db=0, decode_responses=True)
+        redis_client = redis.from_url("redis://red-d0usms6mcj7s73acbs30:6379", decode_responses=True)
         keycloak_token = get_keycloak_admin_token()
 
         # Get the user ID from the request
