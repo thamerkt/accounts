@@ -35,6 +35,7 @@ def get_keycloak_admin_token():
         "password": settings.KEYCLOAK_ADMIN_PASSWORD,
         "grant_type": "password"
     }
+    print('data',data)
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
     response = requests.post(url, data=data, headers=headers)
