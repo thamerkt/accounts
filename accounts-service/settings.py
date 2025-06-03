@@ -144,14 +144,15 @@ SOCIAL_AUTH_KEYCLOAK_USERINFO_URL = os.environ.get('KEYCLOAK_USERINFO_URL')
 
 LOGIN_URL = 'keycloak_login'
 
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': "accounts_db",  # fallback to your DB name
-        'USER': "postgres",               # fallback username
-        'PASSWORD': "thamer4a",                  # *must be set in env*
-        'HOST': "localhost",  # your internal hostname
-        'PORT':  '5432',                  # default postgres port
+        'NAME': os.environ.get('PGDATABASE', 'account_db_kpsn'),  # fallback to your DB name
+        'USER': os.environ.get('PGUSER', 'thamer'),               # fallback username
+        'PASSWORD': os.environ.get('PGPASSWORD'),                  # *must be set in env*
+        'HOST': os.environ.get('PGHOST', 'dpg-d0tflpqdbo4c739ks99g-a'),  # your internal hostname
+        'PORT': os.environ.get('PGPORT', '5432'),                  # default postgres port
     }
 }
 
