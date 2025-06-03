@@ -108,20 +108,32 @@ def create_keycloak_user(username, email, password):
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
+    
+    # Generate default first and last names if not provided
+    first_name = "User"
+    last_name = username.split('@')[0] if '@' in username else "Auto"
+
     data = {
         "username": username,
         "email": email,
+        "firstName": first_name,
+        "lastName": last_name,
         "enabled": True,
-        "credentials": [{"type": "password", "value": password, "temporary": False}]
+        "credentials": [{
+            "type": "password",
+            "value": password,
+            "temporary": False
+        }]
     }
-    
+
     print("Payload being sent to Keycloak:", data)
     response = requests.post(url, json=data, headers=headers)
-    
+
     if response.status_code == 201:
         return {"success": True, "message": "User created successfully"}
     else:
         return {"success": False, "message": response.text}
+
 def get_keycloak_user_id(email):
     token = get_keycloak_admin_token()
     url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users?email={email}"
