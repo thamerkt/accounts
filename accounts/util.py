@@ -103,6 +103,7 @@ def add_user_to_keycloak(email, first_name, last_name):
 
 def create_keycloak_user(username, email, password):
     token = get_keycloak_admin_token()
+    print('token',token)
     url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users"
     headers = {
         "Authorization": f"Bearer {token}",
