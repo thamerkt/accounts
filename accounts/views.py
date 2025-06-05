@@ -60,45 +60,39 @@ class UserSuspendView(APIView):
             return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def publish_rabbitmq_event(self, event_type, email):
-        try:
-            # Establish connection
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(
-                    host='rabbitmq.railway.internal',
-                    port=15672,
-                    heartbeat=600,  # Optional: helps keep connection alive
-                    blocked_connection_timeout=300  # Optional: avoid hangs
-                )
-            )
-            channel = connection.channel()
+    try:
+        # Establish connection using CloudAMQP URL
+        parameters = pika.URLParameters(CLOUDAMQP_URL)
+        connection = pika.BlockingConnection(parameters)
+        channel = connection.channel()
 
-            # Declare exchange
-            exchange_name = 'user_events'
-            channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
+        # Declare exchange
+        exchange_name = 'user_events'
+        channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
 
-            # Prepare message
-            message = {
-                'event': event_type,
-                'payload': {
-                    'email': email
-                }
+        # Prepare message
+        message = {
+            'event': event_type,
+            'payload': {
+                'email': email
             }
+        }
 
-            # Publish with persistence
-            channel.basic_publish(
-                exchange=exchange_name,
-                routing_key=event_type,
-                body=json.dumps(message),
-                properties=pika.BasicProperties(
-                    delivery_mode=2  # Make message persistent
-                )
+        # Publish with persistence
+        channel.basic_publish(
+            exchange=exchange_name,
+            routing_key=event_type,
+            body=json.dumps(message),
+            properties=pika.BasicProperties(
+                delivery_mode=2  # Make message persistent
             )
-        except Exception as e:
-            # Log or handle RabbitMQ errors (optional)
-            print(f"Failed to publish RabbitMQ message: {e}")
-        finally:
-            if 'connection' in locals() and connection.is_open:
-                connection.close()
+        )
+    except Exception as e:
+        # Log or handle RabbitMQ errors (optional)
+        print(f"Failed to publish RabbitMQ message: {e}")
+    finally:
+        if 'connection' in locals() and connection.is_open:
+            connection.close()
 
 
 
