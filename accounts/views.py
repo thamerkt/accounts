@@ -456,62 +456,57 @@ class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = CustomUserSerializer(data=request.data)
         data = request.data
+        email = data.get("email")
+        password = data.get("password")
+        role_type = data.get("role")
+        username = email
 
-        if serializer.is_valid():
-            email = serializer.validated_data.get("email")
-            password = serializer.validated_data.get("password")
-            username = data.get("email")
-            role_type = data.get("role")
+        # Optional: Email format and password validation (basic check)
+        if not email or not password or not role_type:
+            return Response({"message": "Email, password, and role are required."}, status=400)
 
-            otp = generate_and_store_otp(email)
-            user = serializer.save(is_active=False, otp=otp, password=make_password(password))
+        # ✅ Create user in Keycloak
+        result = create_keycloak_user(username, email, password)
 
-            # Send OTP via email
-            send_mail(
-                subject="Email Verification OTP",
-                message=f"Your OTP code for email verification is: {otp}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
-            )
-
-            # ➡️ Create or Update user in Keycloak
-            result = create_keycloak_user(username, email, password)
-
-            if result["success"]:
-                # Get Keycloak user ID
-                keycloak_user_id = get_keycloak_user_id(email)
-
-                # Save Keycloak ID locally
-                user.keycloak_id = keycloak_user_id
-                user.save()
-
-                # Assign role
-                assign_role_to_user(keycloak_user_id, role_type)
-
-                # ✅ Initialize session attribute if not exists / Get existing attribute
-                user_attributes = get_user_attributes(keycloak_user_id)
-                if not user_attributes.get("registrationProgress"):
-                    initialize_registration_session(keycloak_user_id, "step1")
-                else:
-                    print(f"User already has session attributes: {user_attributes}")
-
-                # Auto-login after registration
-                login_result = login_user(email, password)
-
-                if login_result["success"]:
-                    return Response(
-                        {"message": "User registered and logged in successfully!", "token": login_result["token"], "user_id": keycloak_user_id},
-                        status=status.HTTP_201_CREATED
-                    )
-                else:
-                    return Response({"message": "User registered but login failed", "error": login_result["message"]}, status=400)
-
+        if not result["success"]:
             return Response(result, status=400)
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # ✅ Get Keycloak user ID
+        keycloak_user_id = get_keycloak_user_id(email)
+
+        # ✅ Assign role to user (in Keycloak)
+        assign_role_to_user(keycloak_user_id, role_type)
+
+        # ✅ Add default session attribute (optional)
+        user_attributes = get_user_attributes(keycloak_user_id)
+        if not user_attributes.get("registrationProgress"):
+            initialize_registration_session(keycloak_user_id, "step1")
+
+        # ✅ Optional: Generate and send OTP (if still needed for email verification flow)
+        otp = generate_and_store_otp(email)  # You can store in Redis or cache instead of DB
+        send_mail(
+            subject="Email Verification OTP",
+            message=f"Your OTP code for email verification is: {otp}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[email],
+            fail_silently=False,
+        )
+
+        # ✅ Auto-login
+        login_result = login_user(email, password)
+        if login_result["success"]:
+            return Response(
+                {
+                    "message": "User registered and logged in successfully!",
+                    "token": login_result["token"],
+                    "user_id": keycloak_user_id
+                },
+                status=status.HTTP_201_CREATED
+            )
+        else:
+            return Response({"message": "User registered but login failed", "error": login_result["message"]}, status=400)
+
 
 class LoginView(APIView):
     def post(self, request):
