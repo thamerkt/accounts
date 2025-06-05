@@ -53,6 +53,10 @@ def add_user_to_keycloak(email, first_name, last_name):
         "lastName": last_name,
         "enabled": True,
         "emailVerified": True,
+        "attributes": {
+            "is_verified": ["false"],
+            "is_suspended": ["false"]
+        }
     }
 
     headers = {
@@ -108,7 +112,7 @@ def create_keycloak_user(username, email, password):
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-    
+
     # Generate default first and last names if not provided
     first_name = "User"
     last_name = username.split('@')[0] if '@' in username else "Auto"
@@ -119,6 +123,11 @@ def create_keycloak_user(username, email, password):
         "firstName": first_name,
         "lastName": last_name,
         "enabled": True,
+        "emailVerified": False,
+        "attributes": {
+            "is_verified": ["false"],
+            "is_suspended": ["false"]
+        },
         "credentials": [{
             "type": "password",
             "value": password,
@@ -128,12 +137,13 @@ def create_keycloak_user(username, email, password):
 
     print("Payload being sent to Keycloak:", data)
     response = requests.post(url, json=data, headers=headers)
-    print('response',response)
+    print('response', response)
 
     if response.status_code == 201:
         return {"success": True, "message": "User created successfully"}
     else:
         return {"success": False, "message": response.text}
+
 
 def get_keycloak_user_id(email):
     token = get_keycloak_admin_token()
