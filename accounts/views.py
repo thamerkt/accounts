@@ -17,12 +17,17 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from allauth.socialaccount.providers.google.views import GoogleOAuth2Adapter
 from dj_rest_auth.registration.views import SocialLoginView
 from django.contrib.auth.hashers import make_password
-from .util import get_user_attributes,initialize_registration_session
+from .util import get_user_attributes, initialize_registration_session
 import pika
 from logging import getLogger
 from django.utils import timezone
 from rest_framework.permissions import IsAdminUser
 import threading
+import os
+
+# CloudAMQP URL
+CLOUDAMQP_URL = 'amqps://dxapqekt:BbFWQ0gUl1O8u8gHIUV3a4KLZacyrzWt@possum.lmq.cloudamqp.com/dxapqekt'
+
 class UserSuspendView(APIView):
     """
     API endpoint to suspend/unsuspend users
@@ -60,41 +65,39 @@ class UserSuspendView(APIView):
             return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def publish_rabbitmq_event(self, event_type, email):
-    try:
-        # Establish connection using CloudAMQP URL
-        parameters = pika.URLParameters(CLOUDAMQP_URL)
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
+        try:
+            # Establish connection using CloudAMQP URL
+            parameters = pika.URLParameters(CLOUDAMQP_URL)
+            connection = pika.BlockingConnection(parameters)
+            channel = connection.channel()
 
-        # Declare exchange
-        exchange_name = 'user_events'
-        channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
+            # Declare exchange
+            exchange_name = 'user_events'
+            channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
 
-        # Prepare message
-        message = {
-            'event': event_type,
-            'payload': {
-                'email': email
+            # Prepare message
+            message = {
+                'event': event_type,
+                'payload': {
+                    'email': email
+                }
             }
-        }
 
-        # Publish with persistence
-        channel.basic_publish(
-            exchange=exchange_name,
-            routing_key=event_type,
-            body=json.dumps(message),
-            properties=pika.BasicProperties(
-                delivery_mode=2  # Make message persistent
+            # Publish with persistence
+            channel.basic_publish(
+                exchange=exchange_name,
+                routing_key=event_type,
+                body=json.dumps(message),
+                properties=pika.BasicProperties(
+                    delivery_mode=2  # Make message persistent
+                )
             )
-        )
-    except Exception as e:
-        # Log or handle RabbitMQ errors (optional)
-        print(f"Failed to publish RabbitMQ message: {e}")
-    finally:
-        if 'connection' in locals() and connection.is_open:
-            connection.close()
-
-
+        except Exception as e:
+            # Log or handle RabbitMQ errors (optional)
+            print(f"Failed to publish RabbitMQ message: {e}")
+        finally:
+            if 'connection' in locals() and connection.is_open:
+                connection.close()
 
 class ActiveUsersView(APIView):
     """
@@ -126,9 +129,7 @@ class SuspendedUsersView(APIView):
 
         for user in suspended_users:
             # If user has been suspended for more than 30 days, delete the user
-            # We'll use date_joined as a proxy for suspension date if no dedicated field
-            # In a real app, you should have a 'suspended_at' field
-            suspended_since = user.date_joined  # Replace with user.suspended_at if available
+            suspended_since = user.suspended_at if hasattr(user, 'suspended_at') else user.date_joined
             if (timezone.now() - suspended_since).days > 30:
                 removed_users.append({
                     "id": user.id,
@@ -218,26 +219,24 @@ class UserDeleteView(APIView):
         user.delete()
         return Response({"message": "User deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
 
-
 SECRET_KEY = 'your-secret-key'
 from django.http import JsonResponse
 from django.conf import settings
 import jwt  # This is PyJWT
 from jwt import InvalidTokenError
 
+from .util import create_keycloak_user, get_keycloak_admin_token, get_keycloak_user_id, login_user, assign_role_to_user, revoke_user_sessions, generate_and_store_otp, get_keycloak_user_info, add_user_to_keycloak
 
-from .util import create_keycloak_user,get_keycloak_admin_token,get_keycloak_user_id,login_user,assign_role_to_user,revoke_user_sessions,generate_and_store_otp,get_keycloak_user_info,add_user_to_keycloak
 def generate_jwt(user):
     payload = {
-        
         "user_id": user.id,
         "email": user.email,
         "exp": now() + timedelta(days=7)
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
 class GoogleLogin(SocialLoginView):
     adapter_class = GoogleOAuth2Adapter
-
 
 class SendOTPView(APIView):
     """
@@ -250,31 +249,14 @@ class SendOTPView(APIView):
         if not email:
             return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        
-
         return Response({"message": "OTP sent successfully!"}, status=status.HTTP_200_OK)
 
-
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.views import APIView
-
-import json
-from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.views import APIView
 from google.oauth2 import id_token
-import requests  # Standard requests library
 from google.auth.transport import requests as google_requests
 
-import json
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.views import APIView
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests  # Renaming to avoid conflict
-import os
 class GoogleAuth(APIView):
-    
     @csrf_exempt
     def post(self, request):
         try:
@@ -287,10 +269,7 @@ class GoogleAuth(APIView):
 
             # Verify the JWT credential
             try:
-                # Replace with your Google Client ID
                 client_id = os.environ.get('GOOGLE_CLIENT_ID')
-
-                # Use google_requests.Request() instead of requests.Request()
                 id_info = id_token.verify_oauth2_token(credential, google_requests.Request(), client_id)
 
                 # Extract user information from the JWT payload
@@ -301,21 +280,18 @@ class GoogleAuth(APIView):
                 # Add the user to Keycloak (if applicable)
                 try:
                     userdata = add_user_to_keycloak(email, first_name, last_name)
-                    user_id=get_keycloak_user_id(email)
-                    return JsonResponse({'message': 'User authenticated and added to Keycloak', 'userdata': userdata,'user':user_id})
+                    user_id = get_keycloak_user_id(email)
+                    return JsonResponse({'message': 'User authenticated and added to Keycloak', 'userdata': userdata, 'user': user_id})
                 except Exception as e:
                     return JsonResponse({'error': f'Keycloak error: {str(e)}'}, status=500)
 
             except ValueError as e:
-                # Handle JWT verification errors
                 return JsonResponse({'error': f'Invalid JWT credential: {str(e)}'}, status=400)
 
         except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON data in request body'}, status=400)
         except Exception as e:
             return JsonResponse({'error': f'Internal server error: {str(e)}'}, status=500)
-
-
 
 class FacebookAuth(APIView):
     @csrf_exempt
@@ -372,10 +348,8 @@ class FacebookAuth(APIView):
         except Exception as e:
             return JsonResponse({'error': f'Internal server error: {str(e)}'}, status=500)
 
-import requests
 class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
-    
 
     def post(self, request):
         otp = request.data.get("otp")
@@ -434,8 +408,10 @@ class VerifyOTPView(APIView):
 
         except CustomUser.DoesNotExist:
             return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+
 @api_view(["GET"])
 def get_user_progress(request):
     user_id = request.query_params.get("user_id")
@@ -447,6 +423,7 @@ def get_user_progress(request):
         return Response({"progress": progress})
     else:
         return Response({"error": "User not found"}, status=404)
+
 @api_view(["PUT"])   
 def update_registration_progress(user_id, progress, data=None):
     token = get_keycloak_admin_token()
@@ -474,6 +451,7 @@ def update_registration_progress(user_id, progress, data=None):
         print(f"✅ Updated registration progress to {progress} for user {user_id}")
     else:
         raise Exception(f"❌ Failed to update progress: {response.status_code} - {response.text}")
+
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -534,7 +512,6 @@ class RegisterView(APIView):
             return Response(result, status=400)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 class LoginView(APIView):
     def post(self, request):
@@ -606,6 +583,7 @@ class LoginView(APIView):
                 **user_data
             }
         }, status=status.HTTP_200_OK)
+
 def process_identity_verification(ch, method, properties, body):
     try:
         message = json.loads(body)
@@ -641,13 +619,8 @@ def process_identity_verification(ch, method, properties, body):
         print(f"Error processing message: {e}")
 
 def start_identity_verification_consumer():
-    connection_params = pika.ConnectionParameters(
-        host='host.docker.internal',  # Adjust based on your Docker setup
-        port=5672,
-        virtual_host='/',
-        credentials=pika.PlainCredentials('guest', 'guest')  # Adjust if you use auth
-    )
-    connection = pika.BlockingConnection(connection_params)
+    parameters = pika.URLParameters(CLOUDAMQP_URL)
+    connection = pika.BlockingConnection(parameters)
     channel = connection.channel()
 
     channel.queue_declare(queue='identity_verification_queue', durable=True)
@@ -680,6 +653,7 @@ class Role(APIView):
             return Response({"message": f"Role '{role}' assigned to user {user_id}"}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class PasswordResetRequestView(APIView):
     def post(self, request):
         email = request.data.get("email")
@@ -775,6 +749,7 @@ class PasswordResetView(APIView):
             return Response({"message": "Password reset successfully!"}, status=status.HTTP_200_OK)
         except CustomUser.DoesNotExist:
             return Response({"error": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
+
 class LogoutView(APIView):
     def post(self, request):
         refresh_token = request.data.get('refresh_token')
@@ -838,7 +813,6 @@ class LogoutView(APIView):
                 {"error": "An error occurred while processing logout."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
 class AccountDetailsView(APIView):
     def get(self, request):
