@@ -530,8 +530,11 @@ class RegisterView(APIView):
         if not user_attributes.get("registrationProgress"):
             initialize_registration_session(keycloak_user_id, "step1")
 
-        # Send OTP
-        otp = generate_and_store_otp(keycloak_user_id)
+        # Generate and store OTP
+        otp = self.generate_and_store_otp(keycloak_user_id)
+        if not otp:
+            return Response({"message": "Failed to generate OTP. Try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         try:
             send_mail(
                 subject="Email Verification OTP",
@@ -556,6 +559,17 @@ class RegisterView(APIView):
                 "message": "User registered but login failed",
                 "error": login_result.get("message", "Unknown error")
             }, status=status.HTTP_400_BAD_REQUEST)
+
+    def generate_and_store_otp(self, user_id):
+        otp = str(random.randint(100000, 999999))
+        key = f"otp:{user_id}"
+        try:
+            cache.set(key, otp, timeout=300)
+            print(f"[✅ OTP STORED] {key} = {otp}")  # For debugging
+            return otp
+        except Exception as e:
+            print(f"[❌ Redis Error] Failed to store OTP for {user_id}: {e}")
+            return None
 
 class LoginView(APIView):
     def post(self, request):
