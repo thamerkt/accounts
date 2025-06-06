@@ -463,51 +463,53 @@ class RegisterView(APIView):
         role_type = data.get("role")
         username = email
 
-        # Optional: Email format and password validation (basic check)
         if not email or not password or not role_type:
-            return Response({"message": "Email, password, and role are required."}, status=400)
+            return Response({"message": "Email, password, and role are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Create user in Keycloak
+        # Create user in Keycloak
         result = create_keycloak_user(username, email, password)
-
         if not result["success"]:
-            return Response(result, status=400)
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Get Keycloak user ID
+        # Get Keycloak user ID
         keycloak_user_id = get_keycloak_user_id(email)
+        if not keycloak_user_id:
+            return Response({"message": "Failed to retrieve user ID"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # ✅ Assign role to user (in Keycloak)
+        # Assign role
         assign_role_to_user(keycloak_user_id, role_type)
 
-        # ✅ Add default session attribute (optional)
+        # Initialize registration step if missing
         user_attributes = get_user_attributes(keycloak_user_id)
         if not user_attributes.get("registrationProgress"):
             initialize_registration_session(keycloak_user_id, "step1")
 
-        # ✅ Optional: Generate and send OTP (if still needed for email verification flow)
-        otp = generate_and_store_otp(email)  # You can store in Redis or cache instead of DB
-        send_mail(
-            subject="Email Verification OTP",
-            message=f"Your OTP code for email verification is: {otp}",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
+        # Send OTP
+        otp = generate_and_store_otp(email)
+        try:
+            send_mail(
+                subject="Email Verification OTP",
+                message=f"Your OTP code for email verification is: {otp}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            return Response({"message": "User created but failed to send OTP", "error": str(e)}, status=500)
 
-        # ✅ Auto-login
+        # Auto-login
         login_result = login_user(email, password)
         if login_result["success"]:
-            return Response(
-                {
-                    "message": "User registered and logged in successfully!",
-                    "token": login_result["token"],
-                    "user_id": keycloak_user_id
-                },
-                status=status.HTTP_201_CREATED
-            )
+            return Response({
+                "message": "User registered and logged in successfully!",
+                "token": login_result["token"],
+                "user_id": keycloak_user_id
+            }, status=status.HTTP_201_CREATED)
         else:
-            return Response({"message": "User registered but login failed", "error": login_result["message"]}, status=400)
-
+            return Response({
+                "message": "User registered but login failed",
+                "error": login_result.get("message", "Unknown error")
+            }, status=status.HTTP_400_BAD_REQUEST)
 
 class LoginView(APIView):
     def post(self, request):
@@ -684,40 +686,45 @@ class VerifyTokenView(APIView):
         if not auth_header or not auth_header.startswith("Bearer "):
             return Response({"error": "Authorization token is missing or invalid"}, status=status.HTTP_401_UNAUTHORIZED)
         
-        token = auth_header.split(" ")[1]  # Extract the token
-        otp = request.data.get('otp')  # Extract OTP from request body
+        token = auth_header.split(" ")[1]
 
+        # Extract OTP from request
+        otp = request.data.get('otp')
         if not otp:
             return Response({"error": "OTP is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get user info from Keycloak
-        response = requests.post(
-            f"{settings.KEYCLOAK_URL}/userinfo",
-            headers={"Authorization": f"Bearer {token}"}
-        )
+        # Get user info from Keycloak using access token
+        try:
+            response = requests.get(
+                f"{settings.KEYCLOAK_URL}/protocol/openid-connect/userinfo",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+        except requests.RequestException:
+            return Response({"error": "Failed to connect to Keycloak"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         if response.status_code != 200:
-            return Response({"error": "Invalid token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid or expired token"}, status=status.HTTP_401_UNAUTHORIZED)
 
         user_info = response.json()
-        email = user_info.get("email")  # Extract email from userinfo
-
+        email = user_info.get("email")
         if not email:
-            return Response({"error": "Email not found in token"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Email not found in token payload"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Verify OTP
         if not self.verify_otp(email, otp):
-            return Response({"error": "Invalid OTP"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_401_UNAUTHORIZED)
 
         return Response({"message": "Token and OTP verified successfully", "email": email}, status=status.HTTP_200_OK)
 
     def verify_otp(self, email, otp):
-        redis_client = redis.StrictRedis.from_url(settings.CACHES["default"]["LOCATION"], decode_responses=True)
-
-        stored_otp = redis_client.get(f"otp:{email}")  # Retrieve OTP from Redis
-        if stored_otp and stored_otp == otp:
-            redis_client.delete(f"otp:{email}")  # Delete OTP after successful verification
-            return True
+        try:
+            redis_client = redis.StrictRedis.from_url(settings.CACHES["default"]["LOCATION"], decode_responses=True)
+            stored_otp = redis_client.get(f"otp:{email}")
+            if stored_otp and stored_otp == otp:
+                redis_client.delete(f"otp:{email}")
+                return True
+        except redis.RedisError:
+            pass
         return False
 
 class PasswordResetView(APIView):
