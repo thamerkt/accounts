@@ -756,21 +756,20 @@ class VerifyOTPView(APIView):
             status=status.HTTP_200_OK
         )
 
-    def verify_otp(self, user_id, otp):
-        redis_client = redis.StrictRedis.from_url(
-            settings.CACHES["default"]["LOCATION"],
-            decode_responses=True
-        )
+    def verify_otp(user_id, otp):
         key = f"otp:{user_id}"
-        stored_otp = redis_client.get(key)
-
-        if stored_otp is None:
-            raise ValueError("OTP not found or expired")
-        if stored_otp != otp:
-            raise ValueError("OTP mismatch")
-
-        redis_client.delete(key)  # OTP is one-time use
-        return True
+        try:
+            stored_otp = cache.get(key)
+            print(f"[DEBUG] Stored OTP: {stored_otp}, Provided OTP: {otp}")
+            if stored_otp is None:
+                raise ValueError("OTP not found or expired")
+            if stored_otp != otp:
+                raise ValueError("OTP mismatch")
+            cache.delete(key)  # Remove OTP after successful verification
+            return True
+        except Exception as e:
+            print(f"[ERROR] OTP verification error: {e}")
+            raise
 
 class PasswordResetView(APIView):
     def post(self, request):
