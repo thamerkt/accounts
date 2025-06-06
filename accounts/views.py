@@ -34,58 +34,54 @@ class UserSuspendView(APIView):
     API endpoint to suspend or unsuspend a Keycloak user.
     Only accessible by admin users.
     """
-    permission_classes = [AllowAny]  # Change this based on your access control
+    permission_classes = [AllowAny]  # Adjust based on your needs
 
     def post(self, request, user_id):
-        action = request.data.get('action', 'suspend')  # 'suspend' or 'unsuspend'
-        token = get_keycloak_admin_token()
-        if not token:
-            return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        try:
+            action = request.data.get('action', 'suspend')  # 'suspend' or 'unsuspend'
+            token = get_keycloak_admin_token()
+            if not token:
+                return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        user = get_keycloak_user_info(user_id, token)
-        if not user:
-            return Response({"error": "User not found in Keycloak."}, status=status.HTTP_404_NOT_FOUND)
+            user = get_keycloak_user_info(user_id, token)
+            if not user:
+                return Response({"error": "User not found in Keycloak."}, status=status.HTTP_404_NOT_FOUND)
 
-        attributes = user.get("attributes", {})
+            attributes = user.get("attributes", {})
 
-        if action == 'suspend':
-            attributes["is_suspended"] = ["true"]
-            attributes["suspended_at"] = [str(int(timezone.now().timestamp()))]
-            message = f"User {user.get('email')} has been suspended"
-            event_type = 'user.suspended'
-        else:
-            attributes["is_suspended"] = ["false"]
-            attributes["suspended_at"] = [""]
-            message = f"User {user.get('email')} has been unsuspended"
-            event_type = 'user.unsuspended'
+            if action == 'suspend':
+                attributes["is_suspended"] = ["true"]
+                attributes["suspended_at"] = [str(int(timezone.now().timestamp()))]
+                message = f"User {user.get('email')} has been suspended"
+                event_type = 'user.suspended'
+            else:
+                attributes["is_suspended"] = ["false"]
+                attributes["suspended_at"] = [""]
+                message = f"User {user.get('email')} has been unsuspended"
+                event_type = 'user.unsuspended'
 
-        # Update attributes in Keycloak
-        success = update_keycloak_user_attributes(user_id, token, attributes)
-        if not success:
-            return Response({"error": "Failed to update user in Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # Update attributes in Keycloak
+            success = update_keycloak_user_attributes(user_id, token, attributes)
+            if not success:
+                return Response({"error": "Failed to update user in Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Publish to RabbitMQ
-        self.publish_rabbitmq_event(event_type, user.get('email'))
+            # Publish to RabbitMQ
+            self.publish_rabbitmq_event(event_type, user.get('email'))
 
-        return Response({"message": message}, status=status.HTTP_200_OK)
-        
-        except CustomUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": message}, status=status.HTTP_200_OK)
+
         except Exception as e:
             return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def publish_rabbitmq_event(self, event_type, email):
         try:
-            # Establish connection using CloudAMQP URL
             parameters = pika.URLParameters(CLOUDAMQP_URL)
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
 
-            # Declare exchange
             exchange_name = 'user_events'
             channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
 
-            # Prepare message
             message = {
                 'event': event_type,
                 'payload': {
@@ -93,17 +89,15 @@ class UserSuspendView(APIView):
                 }
             }
 
-            # Publish with persistence
             channel.basic_publish(
                 exchange=exchange_name,
                 routing_key=event_type,
                 body=json.dumps(message),
                 properties=pika.BasicProperties(
-                    delivery_mode=2  # Make message persistent
+                    delivery_mode=2  # Persistent
                 )
             )
         except Exception as e:
-            # Log or handle RabbitMQ errors (optional)
             print(f"Failed to publish RabbitMQ message: {e}")
         finally:
             if 'connection' in locals() and connection.is_open:
