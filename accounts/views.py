@@ -210,7 +210,7 @@ class UserListView(APIView):
         if not token:
             return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        url = f"{settings.KEYCLOAK_URL}/admin/realms/{REALM}/users"
+        url = f"{settings.KEYCLOAK_URL}/admin/realms/master/users"
         headers = {"Authorization": f"Bearer {token}"}
 
         response = requests.get(url, headers=headers)
