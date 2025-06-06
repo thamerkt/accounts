@@ -21,7 +21,7 @@ from .util import get_user_attributes, initialize_registration_session
 import pika
 from logging import getLogger
 from django.utils import timezone
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import AllowAny
 import threading
 import os
 from datetime import datetime
@@ -291,7 +291,7 @@ class UserDeleteView(APIView):
     """
     Delete a user by Keycloak ID.
     """
-    permission_classes = [IsAdminUser]
+    permission_classes = [AllowAny]
 
     def delete(self, request, keycloak_id):
         token = get_keycloak_admin_token()
