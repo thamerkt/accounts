@@ -494,12 +494,12 @@ class LoginView(APIView):
             return Response({"error": login_result.get("message", "Login failed.")}, status=status.HTTP_400_BAD_REQUEST)
 
         token = login_result["token"]
-        accesstoken = token["access_token"]
+        access_token = token["access_token"]
 
         # Decode JWT token
         try:
             decoded = jwt.decode(
-                accesstoken,
+                access_token,
                 settings.YOUR_KEYCLOAK_PUBLIC_KEY,
                 algorithms=["RS256"],
                 options={"verify_aud": False},
@@ -510,33 +510,19 @@ class LoginView(APIView):
         roles = decoded.get("realm_access", {}).get("roles", [])
         username = decoded.get("preferred_username", "unknown")
 
-        # Get Keycloak user ID
-        keycloak_id = get_keycloak_user_id(email)
+        # Get user info from Keycloak userinfo endpoint
+        user_info = get_keycloak_user_info(access_token)
+        if not user_info:
+            return Response({"error": "Failed to fetch user info from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Fetch & Update CustomUser data
-        try:
-            user_obj = CustomUser.objects.get(email=email)
+        # Extract custom attributes from user_info, assuming they are stored as user attributes in Keycloak
+        is_verified = user_info.get("is_verified", False)
+        is_suspended = user_info.get("is_suspended", False)
+        email_from_info = user_info.get("email", email)
+        date_joined = user_info.get("createdTimestamp")  # Optional, depends on Keycloak config
 
-            # Update keycloak_id if null
-            if not user_obj.keycloak_id and keycloak_id:
-                user_obj.keycloak_id = keycloak_id
-                user_obj.save()
-
-            user_data = {
-                "email": user_obj.email,
-                "is_verified": user_obj.is_verified,
-                "is_suspended": user_obj.is_suspended,
-                "date_joined": user_obj.date_joined
-            }
-        except CustomUser.DoesNotExist:
-            user_data = {
-                "email": email,
-                "is_verified": False,
-                "is_suspended": False,
-                "date_joined": None
-            }
-
-        # Optionally revoke old sessions
+        # Optionally revoke old sessions if you want to keep that behavior:
+        keycloak_id = decoded.get("sub")  # use 'sub' from token as user ID
         if keycloak_id:
             revoke_user_sessions(keycloak_id)
 
@@ -546,7 +532,10 @@ class LoginView(APIView):
             "user": {
                 "username": username,
                 "roles": roles,
-                **user_data
+                "email": email_from_info,
+                "is_verified": is_verified,
+                "is_suspended": is_suspended,
+                "date_joined": date_joined
             }
         }, status=status.HTTP_200_OK)
 
