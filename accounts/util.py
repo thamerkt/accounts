@@ -65,7 +65,7 @@ def add_user_to_keycloak(email, first_name, last_name):
         user_id = users[0]["id"]
         print("User already exists. No update performed.")
     else:
-        # 2. User doesn't exist — create new user
+        # 2. Create new user
         user_data = {
             "username": email,
             "email": email,
@@ -91,13 +91,23 @@ def add_user_to_keycloak(email, first_name, last_name):
         # Assign default role
         assign_role_to_user(user_id, "customer")
 
-    # 3. Fetch user attributes
+    # 3. Fetch user details and attributes
     user_details_response = requests.get(f"{base_url}/{user_id}", headers=headers)
     if not user_details_response.ok:
         raise Exception(f"[Fetch User Failed] {user_details_response.status_code}: {user_details_response.text}")
     
     user_details = user_details_response.json()
     attributes = user_details.get("attributes", {})
+
+    # 4. Fetch user realm roles
+    roles_response = requests.get(
+        f"{base_url}/{user_id}/role-mappings/realm",
+        headers=headers
+    )
+    if not roles_response.ok:
+        raise Exception(f"[Fetch Roles Failed] {roles_response.status_code}: {roles_response.text}")
+    
+    role_names = [role["name"] for role in roles_response.json()]
 
     return {
         "access_token": access_token,
@@ -107,6 +117,7 @@ def add_user_to_keycloak(email, first_name, last_name):
         "user_exists": user_exists,
         "is_verified": attributes.get("is_verified", ["false"])[0],
         "is_suspended": attributes.get("is_suspended", ["false"])[0],
+        "roles": role_names
     }
 
 def create_keycloak_user(username, email, password):
