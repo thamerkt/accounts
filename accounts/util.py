@@ -46,19 +46,6 @@ def get_keycloak_admin_token():
 def add_user_to_keycloak(email, first_name, last_name):
     access_token = get_keycloak_admin_token()
 
-    user_data = {
-        "username": email,
-        "email": email,
-        "firstName": first_name,
-        "lastName": last_name,
-        "enabled": True,
-        "emailVerified": True,
-        "attributes": {
-            "is_verified": ["false"],
-            "is_suspended": ["false"]
-        }
-    }
-
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -72,28 +59,39 @@ def add_user_to_keycloak(email, first_name, last_name):
         raise Exception(f"[User Lookup Failed] {search_response.status_code}: {search_response.text}")
 
     users = search_response.json()
-    user_exists = False
+    user_exists = bool(users)
 
-    if users:
-        user_exists = True
+    if user_exists:
         user_id = users[0]["id"]
-        update_url = f"{base_url}/{user_id}"
-        update_response = requests.put(update_url, json=user_data, headers=headers)
-
-        if not update_response.ok:
-            raise Exception(f"[User Update Failed] {update_response.status_code}: {update_response.text}")
-        print("User already exists. Info updated.")
+        print("User already exists. No update performed.")
     else:
+        # 2. User doesn't exist — create new user
+        user_data = {
+            "username": email,
+            "email": email,
+            "firstName": first_name,
+            "lastName": last_name,
+            "enabled": True,
+            "emailVerified": True,
+            "attributes": {
+                "is_verified": ["false"],
+                "is_suspended": ["false"]
+            }
+        }
+
         create_response = requests.post(base_url, json=user_data, headers=headers)
         if not create_response.ok:
             raise Exception(f"[User Creation Failed] {create_response.status_code}: {create_response.text}")
         print("User added to Keycloak successfully.")
+
+        # Get new user ID
         search_response = requests.get(f"{base_url}?email={email}", headers=headers)
         user_id = search_response.json()[0]["id"]
 
-    assign_role_to_user(user_id, "customer")
+        # Assign default role
+        assign_role_to_user(user_id, "customer")
 
-    # 🔄 Fetch full user details to get actual attributes
+    # 3. Fetch user attributes
     user_details_response = requests.get(f"{base_url}/{user_id}", headers=headers)
     if not user_details_response.ok:
         raise Exception(f"[Fetch User Failed] {user_details_response.status_code}: {user_details_response.text}")
@@ -104,8 +102,8 @@ def add_user_to_keycloak(email, first_name, last_name):
     return {
         "access_token": access_token,
         "user_id": user_id,
-        "first_name": first_name,
-        "last_name": last_name,
+        "first_name": user_details.get("firstName", first_name),
+        "last_name": user_details.get("lastName", last_name),
         "user_exists": user_exists,
         "is_verified": attributes.get("is_verified", ["false"])[0],
         "is_suspended": attributes.get("is_suspended", ["false"])[0],
