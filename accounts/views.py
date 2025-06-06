@@ -199,8 +199,13 @@ class UserListView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        token = get_keycloak_admin_token()
-        print("TOKEN:", token)
+        try:
+            print(">>> Entered UserListView GET")
+            token = get_keycloak_admin_token()
+            print("TOKEN:", token)
+        except Exception as e:
+            print("Error while getting token:", e)
+            return Response({"error": str(e)}, status=500)
         if not token:
             return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
