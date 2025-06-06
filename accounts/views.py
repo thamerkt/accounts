@@ -429,12 +429,17 @@ class VerifyOTPView(APIView):
 
     def verify_otp(user_id, otp):
         try:
+            print(f"Connecting to Redis for user_id={user_id}")  # Debug
             redis_client = redis.StrictRedis.from_url(
                 settings.CACHES["default"]["LOCATION"],
                 decode_responses=True
             )
+    
             key = f"otp:{user_id}"
+            print(f"Checking Redis key: {key}")  # Debug
+    
             stored_otp = redis_client.get(key)
+            print(f"Stored OTP: {stored_otp}, Provided OTP: {otp}")  # Debug
     
             if stored_otp is None:
                 raise ValueError("OTP not found or expired")
@@ -444,9 +449,11 @@ class VerifyOTPView(APIView):
     
             redis_client.delete(key)
             return True
+    
         except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
-            raise  # Propagate the error to be caught by the calling function
+            import traceback
+            print("Full exception traceback:\n", traceback.format_exc())  # Debug
+            raise  # Let it bubble up
 
 
 from rest_framework.decorators import api_view
