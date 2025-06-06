@@ -25,6 +25,8 @@ from rest_framework.permissions import AllowAny
 import threading
 import os
 from datetime import datetime
+from .util import create_keycloak_user, get_keycloak_admin_token, get_keycloak_user_id, login_user, assign_role_to_user, revoke_user_sessions, generate_and_store_otp, get_keycloak_user_info, add_user_to_keycloak
+
 
 # CloudAMQP URL
 CLOUDAMQP_URL = 'amqps://dxapqekt:BbFWQ0gUl1O8u8gHIUV3a4KLZacyrzWt@possum.lmq.cloudamqp.com/dxapqekt'
@@ -315,7 +317,6 @@ from django.conf import settings
 import jwt  # This is PyJWT
 from jwt import InvalidTokenError
 
-from .util import create_keycloak_user, get_keycloak_admin_token, get_keycloak_user_id, login_user, assign_role_to_user, revoke_user_sessions, generate_and_store_otp, get_keycloak_user_info, add_user_to_keycloak
 
 def generate_jwt(user):
     payload = {
