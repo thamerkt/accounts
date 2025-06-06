@@ -75,7 +75,6 @@ def add_user_to_keycloak(email, first_name, last_name):
     user_exists = False
 
     if users:
-        # 2. User exists — update instead of create
         user_exists = True
         user_id = users[0]["id"]
         update_url = f"{base_url}/{user_id}"
@@ -85,25 +84,32 @@ def add_user_to_keycloak(email, first_name, last_name):
             raise Exception(f"[User Update Failed] {update_response.status_code}: {update_response.text}")
         print("User already exists. Info updated.")
     else:
-        # 3. User doesn't exist — create new user
         create_response = requests.post(base_url, json=user_data, headers=headers)
         if not create_response.ok:
             raise Exception(f"[User Creation Failed] {create_response.status_code}: {create_response.text}")
         print("User added to Keycloak successfully.")
-        # Get newly created user ID
         search_response = requests.get(f"{base_url}?email={email}", headers=headers)
         user_id = search_response.json()[0]["id"]
 
     assign_role_to_user(user_id, "customer")
+
+    # 🔄 Fetch full user details to get actual attributes
+    user_details_response = requests.get(f"{base_url}/{user_id}", headers=headers)
+    if not user_details_response.ok:
+        raise Exception(f"[Fetch User Failed] {user_details_response.status_code}: {user_details_response.text}")
+    
+    user_details = user_details_response.json()
+    attributes = user_details.get("attributes", {})
 
     return {
         "access_token": access_token,
         "user_id": user_id,
         "first_name": first_name,
         "last_name": last_name,
-        "user_exists": user_exists
+        "user_exists": user_exists,
+        "is_verified": attributes.get("is_verified", ["false"])[0],
+        "is_suspended": attributes.get("is_suspended", ["false"])[0],
     }
-
 
 def create_keycloak_user(username, email, password):
     token = get_keycloak_admin_token()
