@@ -489,12 +489,11 @@ class LoginView(APIView):
 
         # Keycloak Login
         login_result = login_user(email, password)
-
         if not login_result.get("success"):
             return Response({"error": login_result.get("message", "Login failed.")}, status=status.HTTP_400_BAD_REQUEST)
 
-        token = login_result["token"]
-        access_token = token["access_token"]
+        token_data = login_result["token"]
+        access_token = token_data.get("access_token")
 
         # Decode JWT token
         try:
@@ -507,30 +506,32 @@ class LoginView(APIView):
         except InvalidTokenError as e:
             return Response({"error": f"Token is invalid: {str(e)}"}, status=status.HTTP_401_UNAUTHORIZED)
 
-        roles = decoded.get("realm_access", {}).get("roles", [])
-        username = decoded.get("preferred_username", "unknown")
-
-        # Get user info from Keycloak userinfo endpoint
-        token = get_keycloak_admin_token()
         keycloak_id = decoded.get("sub")
-        user_info = get_keycloak_user_info(keycloak_id,token)
-        print("user:",user_info)
+        username = decoded.get("preferred_username", "unknown")
+        roles = decoded.get("realm_access", {}).get("roles", [])
+
+        # Get admin token and fetch user info
+        admin_token = get_keycloak_admin_token()
+        user_info = get_keycloak_user_info(keycloak_id, admin_token)
         if not user_info:
             return Response({"error": "Failed to fetch user info from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Extract custom attributes from user_info, assuming they are stored as user attributes in Keycloak
-        is_verified = user_info.get("is_verified", False)
-        is_suspended = user_info.get("is_suspended", False)
+        # Extract values
+        attributes = user_info.get("attributes", {})
         email_from_info = user_info.get("email", email)
-        date_joined = user_info.get("createdTimestamp")  # Optional, depends on Keycloak config
+        is_verified = attributes.get("is_verified", ["false"])[0].lower() == "true"
+        is_suspended = attributes.get("is_suspended", ["false"])[0].lower() == "true"
 
-        # Optionally revoke old sessions if you want to keep that behavior:
-        keycloak_id = decoded.get("sub")  # use 'sub' from token as user ID
+        # Convert timestamp to ISO 8601
+        created_timestamp = user_info.get("createdTimestamp")
+        date_joined = datetime.fromtimestamp(created_timestamp / 1000.0).isoformat() if created_timestamp else None
+
+        # Optionally revoke old sessions
         if keycloak_id:
             revoke_user_sessions(keycloak_id)
 
         return Response({
-            "token": token,
+            "token": access_token,
             "user_id": keycloak_id,
             "user": {
                 "username": username,
@@ -538,7 +539,7 @@ class LoginView(APIView):
                 "email": email_from_info,
                 "is_verified": is_verified,
                 "is_suspended": is_suspended,
-                "date_joined": date_joined
+                "date_joined": date_joined,
             }
         }, status=status.HTTP_200_OK)
 
