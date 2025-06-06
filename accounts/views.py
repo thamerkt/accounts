@@ -26,6 +26,7 @@ import threading
 import os
 from datetime import datetime
 from .util import create_keycloak_user, get_keycloak_admin_token, get_keycloak_user_id, login_user, assign_role_to_user, revoke_user_sessions, generate_and_store_otp, get_keycloak_user_info, add_user_to_keycloak
+from django.conf import settings
 
 
 # CloudAMQP URL
@@ -209,7 +210,7 @@ class UserListView(APIView):
         if not token:
             return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        url = f"{KEYCLOAK_BASE_URL}/admin/realms/{REALM}/users"
+        url = f"{settings.KEYCLOAK_URL}/admin/realms/{REALM}/users"
         headers = {"Authorization": f"Bearer {token}"}
 
         response = requests.get(url, headers=headers)
