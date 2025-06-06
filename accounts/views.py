@@ -263,6 +263,7 @@ class GoogleAuth(APIView):
             # Extract the JWT credential from the request body
             data = json.loads(request.body)
             credential = data.get('credential')  # Extract the JWT credential
+            role=data.get('role')
 
             if not credential:
                 return JsonResponse({'error': 'JWT credential is required'}, status=400)
@@ -279,7 +280,7 @@ class GoogleAuth(APIView):
 
                 # Add the user to Keycloak (if applicable)
                 try:
-                    userdata = add_user_to_keycloak(email, first_name, last_name)
+                    userdata = add_user_to_keycloak(email, first_name, last_name,role)
                     user_id = get_keycloak_user_id(email)
                     return JsonResponse({'message': 'User authenticated and added to Keycloak', 'userdata': userdata, 'user': user_id})
                 except Exception as e:
