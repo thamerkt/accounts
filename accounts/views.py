@@ -362,83 +362,7 @@ logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
-class VerifyOTPView(APIView):
-    permission_classes = [AllowAny]
 
-    def post(self, request):
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                {"error": "Authorization token is missing or invalid"},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-        token = auth_header.split(" ")[1]
-
-        user_id = request.data.get("user_id")
-        otp = request.data.get("otp")
-
-        if not user_id or not otp:
-            return Response(
-                {"error": "Both user_id and otp are required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        user_info = self.get_user_info_from_token(token)
-        if isinstance(user_info, Response):
-            return user_info
-
-        keycloak_user_id = user_info.get("sub")
-        if not keycloak_user_id:
-            return Response({"error": "User ID not found in token payload"}, status=status.HTTP_400_BAD_REQUEST)
-
-        if keycloak_user_id != user_id:
-            return Response({"error": "User ID mismatch"}, status=status.HTTP_403_FORBIDDEN)
-
-        try:
-            if not self.verify_otp(user_id, otp):
-                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_401_UNAUTHORIZED)
-        except Exception as e:
-            logger.error(f"OTP verification error: {str(e)}")
-            return Response({"error": "Internal error during OTP verification"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        return Response(
-            {"message": "Token and OTP verified successfully", "user_id": user_id},
-            status=status.HTTP_200_OK
-        )
-
-    def get_user_info_from_token(self, token):
-        try:
-            response = requests.get(
-                f"{settings.KEYCLOAK_URL}/protocol/openid-connect/userinfo",
-                headers={"Authorization": f"Bearer {token}"}
-            )
-        except requests.RequestException:
-            logger.exception("Connection error to Keycloak")
-            return Response({"error": "Failed to connect to Keycloak"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-        if response.status_code != 200:
-            logger.warning(f"Keycloak token validation failed: {response.text}")
-            return Response({"error": "Invalid or expired token"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        try:
-            return response.json()
-        except ValueError:
-            return Response({"error": "Failed to parse Keycloak response"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    def verify_otp(self, user_id, otp):
-        key = f"otp:{user_id}"
-        try:
-            stored_otp = cache.get(key)
-            print(f"[DEBUG] Stored OTP: {stored_otp}, Provided OTP: {otp}")
-            if stored_otp is None:
-                raise ValueError("OTP not found or expired")
-            if stored_otp != otp:
-                raise ValueError("OTP mismatch")
-            cache.delete(key)
-            return True
-        except Exception as e:
-            print(f"[ERROR] OTP verification error: {e}")
-            raise
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -752,7 +676,7 @@ class VerifyOTPView(APIView):
             status=status.HTTP_200_OK
         )
 
-    def verify_otp(user_id, otp):
+    def verify_otp(self,user_id, otp):
         key = f"otp:{user_id}"
         try:
             stored_otp = cache.get(key)
