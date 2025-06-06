@@ -366,7 +366,6 @@ class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        # Step 1: Extract token from Authorization header
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             return Response(
@@ -375,7 +374,6 @@ class VerifyOTPView(APIView):
             )
         token = auth_header.split(" ")[1]
 
-        # Step 2: Extract user_id and otp from request body
         user_id = request.data.get("user_id")
         otp = request.data.get("otp")
 
@@ -385,9 +383,8 @@ class VerifyOTPView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Step 3: Validate the token and fetch user info
         user_info = self.get_user_info_from_token(token)
-        if isinstance(user_info, Response):  # if error occurred
+        if isinstance(user_info, Response):
             return user_info
 
         keycloak_user_id = user_info.get("sub")
@@ -397,7 +394,6 @@ class VerifyOTPView(APIView):
         if keycloak_user_id != user_id:
             return Response({"error": "User ID mismatch"}, status=status.HTTP_403_FORBIDDEN)
 
-        # Step 4: Verify OTP for user_id
         try:
             if not self.verify_otp(user_id, otp):
                 return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -438,7 +434,7 @@ class VerifyOTPView(APIView):
                 raise ValueError("OTP not found or expired")
             if stored_otp != otp:
                 raise ValueError("OTP mismatch")
-            cache.delete(key)  # Remove OTP after successful verification
+            cache.delete(key)
             return True
         except Exception as e:
             print(f"[ERROR] OTP verification error: {e}")
