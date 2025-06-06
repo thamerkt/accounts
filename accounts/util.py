@@ -176,14 +176,13 @@ def get_keycloak_user_id(email):
         raise Exception(f"Failed to get Keycloak user ID: {response.text}")
 def login_user(email, password):
     data = {
-        "client_id": settings.KEYCLOAK_CLIENT_ID,  # You should have this in settings
-        "client_secret": settings.KEYCLOAK_CLIENT_SECRET,  # You should have this in settings
+        "client_id": settings.KEYCLOAK_CLIENT_ID,
+        "client_secret": settings.KEYCLOAK_CLIENT_SECRET,
         "grant_type": "password",
         "username": email,
         "password": password
     }
     
-    # Send a POST request to the Keycloak token endpoint
     response = requests.post(
         f"{settings.KEYCLOAK_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token",
         data=data,
@@ -191,7 +190,7 @@ def login_user(email, password):
     )
 
     if response.status_code == 200:
-        return {"success": True, "token": response.json()}  # Return the access token
+        return {"success": True, "token": response.json()}
     else:
         return {"success": False, "message": "Invalid credentials or failed to connect to Keycloak."}
 import requests
