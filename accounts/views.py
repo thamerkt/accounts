@@ -556,33 +556,58 @@ def process_identity_verification(ch, method, properties, body):
         keycloak_id = message.get("keycloak_user")
 
         if not keycloak_id:
-            print("Received message missing 'keycloak_user_id'")
+            print("❌ Message missing 'keycloak_user'")
             return
 
-        try:
-            user = CustomUser.objects.get(keycloak_id=keycloak_id)
-            if not user.is_verified:
-                user.is_verified = True
-                user.save()
+        token = get_keycloak_admin_token()
+        user_info = get_keycloak_user_info(keycloak_id, token)
 
-                # Send email notification
+        if not user_info:
+            print(f"❌ User with ID {keycloak_id} not found in Keycloak")
+            return
+
+        attributes = user_info.get("attributes", {})
+        email = user_info.get("email")
+
+        is_verified = attributes.get("is_verified", ["false"])[0].lower() == "true"
+
+        if is_verified:
+            print(f"✅ User {email} is already verified.")
+            return
+
+        # Update Keycloak attribute 'is_verified' to true
+        attributes["is_verified"] = ["true"]
+        user_info["attributes"] = attributes
+
+        update_url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users/{keycloak_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        response = requests.put(update_url, headers=headers, json=user_info)
+
+        if response.status_code in [200, 204]:
+            print(f"✅ User {email} marked as verified in Keycloak.")
+
+            # Optionally, send email notification
+            if email:
                 send_mail(
                     subject="Your Account is Verified",
-                    message="Congratulations! Your account has been successfully verified.",
+                    message="🎉 Congratulations! Your account has been successfully verified.",
                     from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
+                    recipient_list=[email],
                     fail_silently=False,
                 )
-                print(f"User {user.email} marked as verified and notified.")
-            else:
-                print(f"User {user.email} already verified.")
-        except CustomUser.DoesNotExist:
-            print(f"No user found with keycloak_id: {keycloak_id}")
+                print(f"📧 Email sent to {email}")
+        else:
+            print(f"❌ Failed to update Keycloak user: {response.status_code} - {response.text}")
 
     except json.JSONDecodeError as e:
-        print(f"Failed to decode message: {e}")
+        print(f"❌ JSON decode error: {e}")
     except Exception as e:
-        print(f"Error processing message: {e}")
+        print(f"❌ Unexpected error: {e}")
+
 
 def start_identity_verification_consumer():
     parameters = pika.URLParameters(CLOUDAMQP_URL)
