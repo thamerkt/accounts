@@ -364,7 +364,7 @@ class VerifyTokenView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        # Step 1: Extract and validate Authorization header
+        # Step 1: Extract token from Authorization header
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             return Response(
@@ -373,38 +373,42 @@ class VerifyTokenView(APIView):
             )
         token = auth_header.split(" ")[1]
 
-        # Step 2: Get OTP from request
+        # Step 2: Extract user_id and otp from request body
+        user_id = request.data.get("user_id")
         otp = request.data.get("otp")
-        if not otp:
-            return Response({"error": "OTP is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Step 3: Retrieve user info from Keycloak
+        if not user_id or not otp:
+            return Response(
+                {"error": "Both user_id and otp are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Step 3: Validate the token and fetch user info
         user_info = self.get_user_info_from_token(token)
-        if isinstance(user_info, Response):  # Error occurred, return the response
+        if isinstance(user_info, Response):  # if error occurred
             return user_info
 
-        email = user_info.get("email")
-        if not email:
-            return Response({"error": "Email not found in token payload"}, status=status.HTTP_400_BAD_REQUEST)
+        keycloak_user_id = user_info.get("sub")
+        if not keycloak_user_id:
+            return Response({"error": "User ID not found in token payload"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Step 4: Verify OTP from Redis
+        if keycloak_user_id != user_id:
+            return Response({"error": "User ID mismatch"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Step 4: Verify OTP for user_id
         try:
-            if not self.verify_otp(email, otp):
+            if not self.verify_otp(user_id, otp):
                 return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_401_UNAUTHORIZED)
         except Exception as e:
             logger.error(f"OTP verification error: {str(e)}")
             return Response({"error": "Internal error during OTP verification"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response(
-            {"message": "Token and OTP verified successfully", "email": email},
+            {"message": "Token and OTP verified successfully", "user_id": user_id},
             status=status.HTTP_200_OK
         )
 
     def get_user_info_from_token(self, token):
-        """
-        Fetch user info from Keycloak using the access token.
-        Returns a dict on success or a DRF Response on failure.
-        """
         try:
             response = requests.get(
                 f"{settings.KEYCLOAK_URL}/protocol/openid-connect/userinfo",
@@ -423,26 +427,22 @@ class VerifyTokenView(APIView):
         except ValueError:
             return Response({"error": "Failed to parse Keycloak response"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def verify_otp(self, email, otp):
-        """
-        Verify if the OTP matches the one stored in Redis.
-        """
+    def verify_otp(self, user_id, otp):
         redis_client = redis.StrictRedis.from_url(
             settings.CACHES["default"]["LOCATION"],
             decode_responses=True
         )
-
-        key = f"otp:{email}"
+        key = f"otp:{user_id}"
         stored_otp = redis_client.get(key)
-        if stored_otp is None:
-            raise ValueError("OTP not found or already used")
-        
-        if stored_otp != otp:
-            raise ValueError("OTP does not match")
 
-        # OTP is valid: delete it for one-time use
-        redis_client.delete(key)
+        if stored_otp is None:
+            raise ValueError("OTP not found or expired")
+        if stored_otp != otp:
+            raise ValueError("OTP mismatch")
+
+        redis_client.delete(key)  # One-time use
         return True
+
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
