@@ -251,18 +251,19 @@ def revoke_user_sessions(user_id):
     else:
         print(f"❌ Failed to revoke sessions: {response.text}")
 
-def generate_and_store_otp(email):
-    # Generate a 6-digit OTP
+def generate_and_store_otp(user_id):
+    """
+    Generate and store a 6-digit OTP in Redis using the user_id as key.
+    """
     otp = str(random.randint(100000, 999999))
 
     try:
-        # Store OTP for 5 minutes (300 seconds) using Django's cache system
-        cache.set(f"otp:{email}", otp, timeout=300)  # 300 seconds = 5 minutes
+        # Save OTP in Redis under key 'otp:<user_id>' for 5 minutes
+        cache.set(f"otp:{user_id}", otp, timeout=300)
+        return otp
     except Exception as e:
-        # Handle any errors (such as connection issues to Redis)
-        print(f"Error while connecting to Redis via cache: {e}")
+        print(f"❌ Redis error while storing OTP for user_id {user_id}: {e}")
         return None
-
     return otp
 def get_keycloak_user_info(user_id, keycloak_token):
     # Fetch user info from Keycloak using the user_id
