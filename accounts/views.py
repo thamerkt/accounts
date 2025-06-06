@@ -519,7 +519,7 @@ class RegisterView(APIView):
             initialize_registration_session(keycloak_user_id, "step1")
 
         # Send OTP
-        otp = generate_and_store_otp(keycloak_user_id))
+        otp = generate_and_store_otp(keycloak_user_id)
         try:
             send_mail(
                 subject="Email Verification OTP",
