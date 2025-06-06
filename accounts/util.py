@@ -43,7 +43,7 @@ def get_keycloak_admin_token():
         return response.json().get("access_token")
     raise Exception(f"[Token Error] {response.status_code}: {response.text}")
 
-def add_user_to_keycloak(email, first_name, last_name):
+def add_user_to_keycloak(email, first_name, last_name,role):
     access_token = get_keycloak_admin_token()
 
     headers = {
@@ -89,7 +89,7 @@ def add_user_to_keycloak(email, first_name, last_name):
         user_id = search_response.json()[0]["id"]
 
         # Assign default role
-        assign_role_to_user(user_id, "customer")
+        assign_role_to_user(user_id, role)
 
     # 3. Fetch user details and attributes
     user_details_response = requests.get(f"{base_url}/{user_id}", headers=headers)
