@@ -31,34 +31,43 @@ CLOUDAMQP_URL = 'amqps://dxapqekt:BbFWQ0gUl1O8u8gHIUV3a4KLZacyrzWt@possum.lmq.cl
 
 class UserSuspendView(APIView):
     """
-    API endpoint to suspend/unsuspend users
+    API endpoint to suspend or unsuspend a Keycloak user.
     Only accessible by admin users.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # Change this based on your access control
 
     def post(self, request, user_id):
-        try:
-            # Use keycloak_id for lookup
-            user = CustomUser.objects.get(keycloak_id=user_id)
-            action = request.data.get('action', 'suspend')  # 'suspend' or 'unsuspend'
+        action = request.data.get('action', 'suspend')  # 'suspend' or 'unsuspend'
+        token = get_keycloak_admin_token()
+        if not token:
+            return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            if action == 'suspend':
-                user.is_suspended = True
-                user.suspended_at = timezone.now()
-                message = f"User {user.email} has been suspended"
-                event_type = 'user.suspended'
-            else:
-                user.is_suspended = False
-                user.suspended_at = None
-                message = f"User {user.email} has been unsuspended"
-                event_type = 'user.unsuspended'
-            
-            user.save()
+        user = get_keycloak_user_info(user_id, token)
+        if not user:
+            return Response({"error": "User not found in Keycloak."}, status=status.HTTP_404_NOT_FOUND)
 
-            # Publish to RabbitMQ
-            self.publish_rabbitmq_event(event_type, user.email)
+        attributes = user.get("attributes", {})
 
-            return Response({"message": message}, status=status.HTTP_200_OK)
+        if action == 'suspend':
+            attributes["is_suspended"] = ["true"]
+            attributes["suspended_at"] = [str(int(timezone.now().timestamp()))]
+            message = f"User {user.get('email')} has been suspended"
+            event_type = 'user.suspended'
+        else:
+            attributes["is_suspended"] = ["false"]
+            attributes["suspended_at"] = [""]
+            message = f"User {user.get('email')} has been unsuspended"
+            event_type = 'user.unsuspended'
+
+        # Update attributes in Keycloak
+        success = update_keycloak_user_attributes(user_id, token, attributes)
+        if not success:
+            return Response({"error": "Failed to update user in Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Publish to RabbitMQ
+        self.publish_rabbitmq_event(event_type, user.get('email'))
+
+        return Response({"message": message}, status=status.HTTP_200_OK)
         
         except CustomUser.DoesNotExist:
             return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -102,47 +111,83 @@ class UserSuspendView(APIView):
 
 class ActiveUsersView(APIView):
     """
-    API endpoint to list all active (not suspended) users.
+    API endpoint to list all active (not suspended) users from Keycloak.
     Only accessible by admin users.
     """
     permission_classes = [AllowAny]
 
     def get(self, request):
-        active_users = CustomUser.objects.filter(is_suspended=False)
-        serializer = CustomUserSerializer(active_users, many=True)
-        data = serializer.data
-        for user in data:
-            user.pop('password', None)
-        return Response(data, status=status.HTTP_200_OK)
+        token = get_keycloak_admin_token()
+        if not token:
+            return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        users = get_all_keycloak_users(token)
+        if users is None:
+            return Response({"error": "Failed to fetch users from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        active_users = []
+        for user in users:
+            attributes = user.get("attributes", {})
+            is_suspended = attributes.get("is_suspended", ["false"])[0].lower() == "true"
+
+            if not is_suspended:
+                active_users.append({
+                    "id": user.get("id"),
+                    "username": user.get("username"),
+                    "email": user.get("email"),
+                    "firstName": user.get("firstName"),
+                    "lastName": user.get("lastName"),
+                    "emailVerified": user.get("emailVerified"),
+                    "createdTimestamp": user.get("createdTimestamp"),
+                })
+
+        return Response(active_users, status=status.HTTP_200_OK)
 
 class SuspendedUsersView(APIView):
     """
-    API endpoint to list all suspended users and automatically remove those suspended for more than 30 days.
-    Only accessible by admin users.
+    API endpoint to list all suspended Keycloak users and remove those suspended for over 30 days.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny]  # Replace with your actual admin check
 
     def get(self, request):
-        # Get all suspended users
-        suspended_users = CustomUser.objects.filter(is_suspended=True)
+        admin_token = get_keycloak_admin_token()
+        if not admin_token:
+            return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        all_users = get_all_keycloak_users(admin_token)
+        if all_users is None:
+            return Response({"error": "Failed to fetch users from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         removed_users = []
         still_suspended = []
 
-        for user in suspended_users:
-            # If user has been suspended for more than 30 days, delete the user
-            suspended_since = user.suspended_at if hasattr(user, 'suspended_at') else user.date_joined
-            if (timezone.now() - suspended_since).days > 30:
+        for user in all_users:
+            attributes = user.get("attributes", {})
+            is_suspended = attributes.get("is_suspended", ["false"])[0].lower() == "true"
+
+            if not is_suspended:
+                continue
+
+            created_timestamp = user.get("createdTimestamp")
+            if not created_timestamp:
+                continue  # skip if no timestamp
+
+            suspended_since = datetime.fromtimestamp(created_timestamp / 1000.0)
+
+            if timezone.now() - suspended_since > timedelta(days=30):
+                # Delete user from Keycloak
+                user_id = user.get("id")
+                delete_keycloak_user(user_id, admin_token)
                 removed_users.append({
-                    "id": user.id,
-                    "email": user.email,
-                    "suspended_since": suspended_since,
+                    "id": user_id,
+                    "email": user.get("email"),
+                    "suspended_since": suspended_since.isoformat()
                 })
-                user.delete()
             else:
                 still_suspended.append({
-                    "id": user.id,
-                    "email": user.email,
-                    "suspended_since": suspended_since,
+                    "id": user.get("id"),
+                    "email": user.get("email"),
+                    "suspended_since": suspended_since.isoformat()
                 })
 
         return Response({
@@ -152,33 +197,69 @@ class SuspendedUsersView(APIView):
 
 class UserListView(APIView):
     """
-    API endpoint to get all users (excluding password field).
+    API endpoint to get all users from Keycloak (excluding password).
     """
     permission_classes = [AllowAny]
 
     def get(self, request):
-        users = CustomUser.objects.all()
-        serializer = CustomUserSerializer(users, many=True)
-        data = serializer.data
-        for user in data:
-            user.pop('password', None)
-        return Response(data, status=status.HTTP_200_OK)
+        token = get_keycloak_admin_token()
+        if not token:
+            return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        url = f"{KEYCLOAK_BASE_URL}/admin/realms/{REALM}/users"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return Response({"error": "Failed to fetch users from Keycloak."}, status=response.status_code)
+
+        users = response.json()
+        clean_users = []
+
+        for user in users:
+            clean_users.append({
+                "id": user.get("id"),
+                "username": user.get("username"),
+                "email": user.get("email"),
+                "first_name": user.get("firstName"),
+                "last_name": user.get("lastName"),
+                "email_verified": user.get("emailVerified"),
+                "enabled": user.get("enabled"),
+                "attributes": user.get("attributes", {}),
+                "created": user.get("createdTimestamp")
+            })
+
+        return Response(clean_users, status=status.HTTP_200_OK)
 class UserDetailView(APIView):
     """
-    Retrieve a single user by ID (excluding password).
+    Retrieve a single user by Keycloak ID (excluding sensitive fields).
     """
     permission_classes = [AllowAny]
 
     def get(self, request, keycloak_id):
-        try:
-            user = CustomUser.objects.get(keycloak_id=keycloak_id)
-        except CustomUser.DoesNotExist:
+        token = get_keycloak_admin_token()
+        if not token:
+            return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        user = get_keycloak_user_info(keycloak_id, token)
+        if not user:
             return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = CustomUserSerializer(user)
-        data = serializer.data
-        data.pop('password', None)
-        return Response(data, status=status.HTTP_200_OK)
+
+        attributes = user.get("attributes", {})
+
+        user_data = {
+            "id": user.get("id"),
+            "username": user.get("username"),
+            "email": user.get("email"),
+            "firstName": user.get("firstName"),
+            "lastName": user.get("lastName"),
+            "emailVerified": user.get("emailVerified"),
+            "createdTimestamp": user.get("createdTimestamp"),
+            "is_suspended": attributes.get("is_suspended", ["false"])[0].lower() == "true",
+            "is_verified": attributes.get("is_verified", ["false"])[0].lower() == "true",
+        }
+
+        return Response(user_data, status=status.HTTP_200_OK)
 
 class UserUpdateView(APIView):
     """
@@ -208,17 +289,29 @@ class UserUpdateView(APIView):
 
 class UserDeleteView(APIView):
     """
-    Delete a user by ID.
+    Delete a user by Keycloak ID.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [IsAdminUser]
 
-    def delete(self, request, pk):
-        try:
-            user = CustomUser.objects.get(pk=pk)
-        except CustomUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-        user.delete()
-        return Response({"message": "User deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
+    def delete(self, request, keycloak_id):
+        token = get_keycloak_admin_token()
+        if not token:
+            return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        url = f"{KEYCLOAK_BASE_URL}/admin/realms/{REALM}/users/{keycloak_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        response = requests.delete(url, headers=headers)
+
+        if response.status_code == 204:
+            return Response({"message": "User deleted successfully."}, status=status.HTTP_204_NO_CONTENT)
+        elif response.status_code == 404:
+            return Response({"error": "User not found in Keycloak."}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            return Response(
+                {"error": f"Failed to delete user: {response.text}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 SECRET_KEY = 'your-secret-key'
 from django.http import JsonResponse
