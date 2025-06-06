@@ -511,7 +511,8 @@ class LoginView(APIView):
         username = decoded.get("preferred_username", "unknown")
 
         # Get user info from Keycloak userinfo endpoint
-        user_info = get_keycloak_user_info(access_token)
+        token = get_keycloak_admin_token()
+        user_info = get_keycloak_user_info(access_token,token)
         if not user_info:
             return Response({"error": "Failed to fetch user info from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
