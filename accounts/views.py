@@ -711,55 +711,52 @@ class PasswordResetRequestView(APIView):
         except CustomUser.DoesNotExist:
             return Response({"error": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
 
-class VerifyTokenView(APIView):
-    permission_classes = [AllowAny]
+class VerifyOTPView(APIView):
+    permission_classes = [AllowAny]  # No auth needed
 
     def post(self, request):
-        # Extract token from headers
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return Response({"error": "Authorization token is missing or invalid"}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        token = auth_header.split(" ")[1]
+        user_id = request.data.get("user_id")
+        otp = request.data.get("otp")
 
-        # Extract OTP from request
-        otp = request.data.get('otp')
-        if not otp:
-            return Response({"error": "OTP is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Get user info from Keycloak using access token
-        try:
-            response = requests.get(
-                f"{settings.KEYCLOAK_URL}/protocol/openid-connect/userinfo",
-                headers={"Authorization": f"Bearer {token}"}
+        if not user_id or not otp:
+            return Response(
+                {"error": "Both user_id and otp are required"},
+                status=status.HTTP_400_BAD_REQUEST
             )
-        except requests.RequestException:
-            return Response({"error": "Failed to connect to Keycloak"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        if response.status_code != 200:
-            return Response({"error": "Invalid or expired token"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        user_info = response.json()
-        email = user_info.get("email")
-        if not email:
-            return Response({"error": "Email not found in token payload"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Verify OTP
-        if not self.verify_otp(email, otp):
-            return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_401_UNAUTHORIZED)
-
-        return Response({"message": "Token and OTP verified successfully", "email": email}, status=status.HTTP_200_OK)
-
-    def verify_otp(self, email, otp):
         try:
-            redis_client = redis.StrictRedis.from_url(settings.CACHES["default"]["LOCATION"], decode_responses=True)
-            stored_otp = redis_client.get(f"otp:{email}")
-            if stored_otp and stored_otp == otp:
-                redis_client.delete(f"otp:{email}")
-                return True
-        except redis.RedisError:
-            pass
-        return False
+            if not self.verify_otp(user_id, otp):
+                return Response(
+                    {"error": "Invalid or expired OTP"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+        except Exception as e:
+            logger.error(f"OTP verification error: {str(e)}")
+            return Response(
+                {"error": "Internal error during OTP verification"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {"message": "OTP verified successfully", "user_id": user_id},
+            status=status.HTTP_200_OK
+        )
+
+    def verify_otp(self, user_id, otp):
+        redis_client = redis.StrictRedis.from_url(
+            settings.CACHES["default"]["LOCATION"],
+            decode_responses=True
+        )
+        key = f"otp:{user_id}"
+        stored_otp = redis_client.get(key)
+
+        if stored_otp is None:
+            raise ValueError("OTP not found or expired")
+        if stored_otp != otp:
+            raise ValueError("OTP mismatch")
+
+        redis_client.delete(key)  # OTP is one-time use
+        return True
 
 class PasswordResetView(APIView):
     def post(self, request):
