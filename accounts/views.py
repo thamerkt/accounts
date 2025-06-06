@@ -427,21 +427,26 @@ class VerifyOTPView(APIView):
         except ValueError:
             return Response({"error": "Failed to parse Keycloak response"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def verify_otp(self, user_id, otp):
-        redis_client = redis.StrictRedis.from_url(
-            settings.CACHES["default"]["LOCATION"],
-            decode_responses=True
-        )
-        key = f"otp:{user_id}"
-        stored_otp = redis_client.get(key)
-
-        if stored_otp is None:
-            raise ValueError("OTP not found or expired")
-        if stored_otp != otp:
-            raise ValueError("OTP mismatch")
-
-        redis_client.delete(key)  # One-time use
-        return True
+    def verify_otp(user_id, otp):
+        try:
+            redis_client = redis.StrictRedis.from_url(
+                settings.CACHES["default"]["LOCATION"],
+                decode_responses=True
+            )
+            key = f"otp:{user_id}"
+            stored_otp = redis_client.get(key)
+    
+            if stored_otp is None:
+                raise ValueError("OTP not found or expired")
+    
+            if stored_otp != otp:
+                raise ValueError("OTP mismatch")
+    
+            redis_client.delete(key)
+            return True
+        except Exception as e:
+            logger.error(f"Redis error: {str(e)}")
+            raise  # Propagate the error to be caught by the calling function
 
 
 from rest_framework.decorators import api_view
