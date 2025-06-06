@@ -429,7 +429,7 @@ class VerifyOTPView(APIView):
         except ValueError:
             return Response({"error": "Failed to parse Keycloak response"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def verify_otp(user_id, otp):
+    def verify_otp(self, user_id, otp):
         key = f"otp:{user_id}"
         try:
             stored_otp = cache.get(key)
