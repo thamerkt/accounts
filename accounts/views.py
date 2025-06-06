@@ -349,66 +349,100 @@ class FacebookAuth(APIView):
         except Exception as e:
             return JsonResponse({'error': f'Internal server error: {str(e)}'}, status=500)
 
-class VerifyOTPView(APIView):
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from rest_framework import status
+from django.conf import settings
+import redis
+import requests
+import logging
+
+logger = logging.getLogger(__name__)
+
+class VerifyTokenView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        # Step 1: Extract and validate Authorization header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return Response(
+                {"error": "Authorization token is missing or invalid"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        token = auth_header.split(" ")[1]
+
+        # Step 2: Get OTP from request
         otp = request.data.get("otp")
-        redis_client = redis.from_url("redis://red-d0usms6mcj7s73acbs30:6379", decode_responses=True)
-        keycloak_token = get_keycloak_admin_token()
+        if not otp:
+            return Response({"error": "OTP is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get the user ID from the request
-        user_id = request.data.get("user_id")
+        # Step 3: Retrieve user info from Keycloak
+        user_info = self.get_user_info_from_token(token)
+        if isinstance(user_info, Response):  # Error occurred, return the response
+            return user_info
 
-        # Fetch user info from Keycloak using the user_id and token
-        user_info = get_keycloak_user_info(user_id, keycloak_token)
-
-        if not user_info:
-            return Response({"error": "Failed to fetch user info from Keycloak"}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Get the email from the user info
         email = user_info.get("email")
         if not email:
-            return Response({"error": "Email not found in Keycloak user info"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Email not found in token payload"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Attempt to get the OTP from Redis (with email as key)
-        redis_otp = cache.get(f"otp:{email}")
-        
-        if not redis_otp:
-            return Response({"error": f"OTP has expired or does not exist."}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Check if the OTP matches
-        if redis_otp != otp:
-            return Response({"error": f"Invalid OTP "}, status=status.HTTP_400_BAD_REQUEST)
-        
+        # Step 4: Verify OTP from Redis
         try:
-            # Find the user in your database using the email
-            user = CustomUser.objects.get(email=email)
+            if not self.verify_otp(email, otp):
+                return Response({"error": "Invalid or expired OTP"}, status=status.HTTP_401_UNAUTHORIZED)
+        except Exception as e:
+            logger.error(f"OTP verification error: {str(e)}")
+            return Response({"error": "Internal error during OTP verification"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # Mark the user as active and clear the OTP field
-            user.is_active = True
-            user.otp = None
-            user.keycloak_id = user_id  # Set the Keycloak user ID to the CustomUser model
-            user.save()
+        return Response(
+            {"message": "Token and OTP verified successfully", "email": email},
+            status=status.HTTP_200_OK
+        )
 
-            # Now update the Keycloak user to mark email as verified
-            url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users/{user_id}"
-            headers = {
-                "Authorization": f"Bearer {keycloak_token}",
-                "Content-Type": "application/json"
-            }
-            data = {"emailVerified": True}  # Mark the email as verified in Keycloak
+    def get_user_info_from_token(self, token):
+        """
+        Fetch user info from Keycloak using the access token.
+        Returns a dict on success or a DRF Response on failure.
+        """
+        try:
+            response = requests.get(
+                f"{settings.KEYCLOAK_URL}/protocol/openid-connect/userinfo",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+        except requests.RequestException as e:
+            logger.exception("Connection error to Keycloak")
+            return Response({"error": "Failed to connect to Keycloak"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-            response = requests.put(url, json=data, headers=headers)
+        if response.status_code != 200:
+            logger.warning(f"Keycloak token validation failed: {response.text}")
+            return Response({"error": "Invalid or expired token"}, status=status.HTTP_401_UNAUTHORIZED)
 
-            if response.status_code != 204:
-                return Response({"error": "Failed to update Keycloak user"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        try:
+            return response.json()
+        except ValueError:
+            return Response({"error": "Failed to parse Keycloak response"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # OTP verification was successful
-            return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
+    def verify_otp(self, email, otp):
+        """
+        Verify if the OTP matches the one stored in Redis.
+        """
+        redis_client = redis.StrictRedis.from_url(
+            settings.CACHES["default"]["LOCATION"],
+            decode_responses=True
+        )
 
-        except CustomUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        key = f"otp:{email}"
+        stored_otp = redis_client.get(key)
+        if stored_otp is None:
+            raise ValueError("OTP not found or already used")
+        
+        if stored_otp != otp:
+            raise ValueError("OTP does not match")
+
+        # OTP is valid: delete it for one-time use
+        redis_client.delete(key)
+        return True
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
