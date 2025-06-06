@@ -112,6 +112,7 @@ class ActiveUsersView(APIView):
 
     def get(self, request):
         token = get_keycloak_admin_token()
+        print("TOKEN:", token)
         if not token:
             return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
