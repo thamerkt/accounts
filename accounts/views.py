@@ -360,7 +360,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class VerifyTokenView(APIView):
+class VerifyOTPView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
