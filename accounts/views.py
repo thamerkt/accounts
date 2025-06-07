@@ -398,6 +398,7 @@ class FacebookAuth(APIView):
             data = json.loads(request.body)
             access_token = data.get('accessToken')
             user_id = data.get('userID')
+            role=data.get('role')
 
             if not access_token or not user_id:
                 return JsonResponse({'error': 'Access token and user ID are required'}, status=400)
@@ -431,7 +432,7 @@ class FacebookAuth(APIView):
 
             # Step 3: Add the user to Keycloak
             try:
-                userdata = add_user_to_keycloak(email, first_name, last_name)
+                userdata = add_user_to_keycloak(email, first_name, last_name,role)
                 user_id = get_keycloak_user_id(email)
                 return JsonResponse({
                     'message': 'User authenticated and added to Keycloak',
