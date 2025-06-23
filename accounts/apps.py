@@ -12,10 +12,10 @@ class AccountsConfig(AppConfig):
 
         def run_consumer():
             try:
-                logging.getLogger(__name__).info("Starting RabbitMQ consumer thread...")
+                print("[DEBUG] Starting RabbitMQ consumer thread...")
                 start_consumer_thread()
             except Exception as e:
-                logging.getLogger(__name__).error(f"Failed to start RabbitMQ consumer thread: {e}")
+                print(f"[ERROR] Failed to start RabbitMQ consumer thread: {e}")
 
         consumer_thread = threading.Thread(target=run_consumer, daemon=True)
         consumer_thread.start()

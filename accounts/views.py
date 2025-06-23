@@ -25,10 +25,19 @@ from rest_framework.permissions import AllowAny
 import threading
 import os
 from datetime import datetime
-from .util import create_keycloak_user, get_keycloak_admin_token, get_keycloak_user_id, login_user, assign_role_to_user, revoke_user_sessions, generate_and_store_otp, get_keycloak_user_info, add_user_to_keycloak
+from .util import create_keycloak_user, get_keycloak_admin_token, get_keycloak_user_id, login_user, assign_role_to_user, revoke_user_sessions, generate_and_store_otp, get_keycloak_user_info, add_user_to_keycloak,delete_keycloak_user,get_all_keycloak_users,get_user_attributes,update_keycloak_user_attributes,verify_user_email_by_id
 from django.conf import settings
-
-
+from rest_framework.decorators import api_view, permission_classes
+from .permissions import IsAdmin, IsClient
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from jose import jwt, JWTError
+from jose.exceptions import ExpiredSignatureError
+from django.conf import settings
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from .permissions import AllowAnyRole
 # CloudAMQP URL
 CLOUDAMQP_URL = 'amqps://dxapqekt:BbFWQ0gUl1O8u8gHIUV3a4KLZacyrzWt@possum.lmq.cloudamqp.com/dxapqekt'
 
@@ -37,17 +46,20 @@ class UserSuspendView(APIView):
     API endpoint to suspend or unsuspend a Keycloak user.
     Only accessible by admin users.
     """
-    permission_classes = [AllowAny]  # Adjust based on your needs
+    permission_classes = [AllowAnyRole]  # Adjust based on your needs
 
     def post(self, request, user_id):
         try:
             action = request.data.get('action', 'suspend')  # 'suspend' or 'unsuspend'
             token = get_keycloak_admin_token()
+            
             if not token:
+                print("Error: Failed to get Keycloak admin token.")
                 return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
             user = get_keycloak_user_info(user_id, token)
             if not user:
+                print(f"Warning: User with ID {user_id} not found in Keycloak.")
                 return Response({"error": "User not found in Keycloak."}, status=status.HTTP_404_NOT_FOUND)
 
             attributes = user.get("attributes", {})
@@ -57,29 +69,46 @@ class UserSuspendView(APIView):
                 attributes["suspended_at"] = [str(int(timezone.now().timestamp()))]
                 message = f"User {user.get('email')} has been suspended"
                 event_type = 'user.suspended'
-            else:
+            elif action == 'unsuspend':
                 attributes["is_suspended"] = ["false"]
                 attributes["suspended_at"] = [""]
                 message = f"User {user.get('email')} has been unsuspended"
                 event_type = 'user.unsuspended'
+            else:
+                print(f"Warning: Invalid action '{action}' received for user {user_id}.")
+                return Response({"error": f"Invalid action '{action}'. Use 'suspend' or 'unsuspend'."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Update attributes in Keycloak
-            success = update_keycloak_user_attributes(user_id, token, attributes)
+            print(f"Info: Updating user {user_id} attributes: {attributes}")
+            try:
+                success = update_keycloak_user_attributes(user_id, token, attributes)
+            except Exception as e:
+                print(f"Error: Exception during update_keycloak_user_attributes for user {user_id}: {str(e)}")
+                return Response({"error": f"Exception during user update: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
             if not success:
+                print(f"Error: update_keycloak_user_attributes returned False for user {user_id}.")
                 return Response({"error": "Failed to update user in Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # Publish to RabbitMQ
+            # Publish event to RabbitMQ (optional errors logged but do not fail request)
             self.publish_rabbitmq_event(event_type, user.get('email'))
 
             return Response({"message": message}, status=status.HTTP_200_OK)
 
         except Exception as e:
+            print(f"Error: Unexpected error in UserSuspendView: {str(e)}")
             return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def publish_rabbitmq_event(self, event_type, email):
+        connection = None
         try:
-            parameters = pika.URLParameters(CLOUDAMQP_URL)
-            connection = pika.BlockingConnection(parameters)
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host='host.docker.internal',
+                    port=5672,
+                    heartbeat=600,
+                    blocked_connection_timeout=300
+                )
+            )
             channel = connection.channel()
 
             exchange_name = 'user_events'
@@ -97,21 +126,28 @@ class UserSuspendView(APIView):
                 routing_key=event_type,
                 body=json.dumps(message),
                 properties=pika.BasicProperties(
-                    delivery_mode=2  # Persistent
+                    delivery_mode=2
                 )
             )
+            print(f"Info: Published RabbitMQ event '{event_type}' for {email}")
+
         except Exception as e:
-            print(f"Failed to publish RabbitMQ message: {e}")
+            print(f"Error: Failed to publish RabbitMQ message: {e}")
+
         finally:
-            if 'connection' in locals() and connection.is_open:
-                connection.close()
+            if connection and connection.is_open:
+                try:
+                    connection.close()
+                except Exception as e:
+                    print(f"Warning: Failed to close RabbitMQ connection: {e}")
+
 
 class ActiveUsersView(APIView):
     """
     API endpoint to list all active (not suspended) users from Keycloak.
     Only accessible by admin users.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAnyRole]
 
     def get(self, request):
         token = get_keycloak_admin_token()
@@ -119,7 +155,7 @@ class ActiveUsersView(APIView):
         if not token:
             return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        users = get_all_keycloak_users(token)
+        users = get_all_keycloak_users()
         if users is None:
             return Response({"error": "Failed to fetch users from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -142,62 +178,45 @@ class ActiveUsersView(APIView):
         return Response(active_users, status=status.HTTP_200_OK)
 
 class SuspendedUsersView(APIView):
-    """
-    API endpoint to list all suspended Keycloak users and remove those suspended for over 30 days.
-    """
-    permission_classes = [AllowAny]  # Replace with your actual admin check
+    permission_classes =[AllowAnyRole]
+    
+    permission_classes = [AllowAny]
 
     def get(self, request):
-        admin_token = get_keycloak_admin_token()
-        if not admin_token:
+        token = get_keycloak_admin_token()
+        print("TOKEN:", token)
+        if not token:
             return Response({"error": "Failed to get Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        all_users = get_all_keycloak_users(admin_token)
-        if all_users is None:
+        users = get_all_keycloak_users()
+        if users is None:
             return Response({"error": "Failed to fetch users from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        removed_users = []
-        still_suspended = []
-
-        for user in all_users:
+        active_users = []
+        for user in users:
             attributes = user.get("attributes", {})
-            is_suspended = attributes.get("is_suspended", ["false"])[0].lower() == "true"
+            is_suspended = attributes.get("is_suspended", ["true"])[0].lower() == "true"
 
             if not is_suspended:
-                continue
-
-            created_timestamp = user.get("createdTimestamp")
-            if not created_timestamp:
-                continue  # skip if no timestamp
-
-            suspended_since = datetime.fromtimestamp(created_timestamp / 1000.0)
-
-            if timezone.now() - suspended_since > timedelta(days=30):
-                # Delete user from Keycloak
-                user_id = user.get("id")
-                delete_keycloak_user(user_id, admin_token)
-                removed_users.append({
-                    "id": user_id,
-                    "email": user.get("email"),
-                    "suspended_since": suspended_since.isoformat()
-                })
-            else:
-                still_suspended.append({
+                active_users.append({
                     "id": user.get("id"),
+                    "username": user.get("username"),
                     "email": user.get("email"),
-                    "suspended_since": suspended_since.isoformat()
+                    "firstName": user.get("firstName"),
+                    "lastName": user.get("lastName"),
+                    "emailVerified": user.get("emailVerified"),
+                    "createdTimestamp": user.get("createdTimestamp"),
                 })
 
-        return Response({
-            "removed_users": removed_users,
-            "still_suspended": still_suspended,
-        }, status=status.HTTP_200_OK)
+        return Response(active_users, status=status.HTTP_200_OK)
+
 
 class UserListView(APIView):
     """
-    API endpoint to get all users from Keycloak (excluding password).
+    API endpoint to get all users from Keycloak (excluding password),
+    and include their assigned roles.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAnyRole]
 
     def get(self, request):
         try:
@@ -207,10 +226,13 @@ class UserListView(APIView):
         except Exception as e:
             print("Error while getting token:", e)
             return Response({"error": str(e)}, status=500)
+
         if not token:
             return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        url = f"{settings.KEYCLOAK_URL}/admin/realms/master/users"
+        base_url = settings.KEYCLOAK_URL
+        realm = "my-kong"
+        url = f"{base_url}/admin/realms/{realm}/users"
         headers = {"Authorization": f"Bearer {token}"}
 
         response = requests.get(url, headers=headers)
@@ -221,8 +243,20 @@ class UserListView(APIView):
         clean_users = []
 
         for user in users:
+            user_id = user.get("id")
+
+            # Récupération des rôles de l'utilisateur
+            role_url = f"{base_url}/admin/realms/{realm}/users/{user_id}/role-mappings/realm"
+            role_response = requests.get(role_url, headers=headers)
+
+            if role_response.status_code != 200:
+                user_roles = []
+            else:
+                role_data = role_response.json()
+                user_roles = [role["name"] for role in role_data]
+
             clean_users.append({
-                "id": user.get("id"),
+                "id": user_id,
                 "username": user.get("username"),
                 "email": user.get("email"),
                 "first_name": user.get("firstName"),
@@ -230,15 +264,17 @@ class UserListView(APIView):
                 "email_verified": user.get("emailVerified"),
                 "enabled": user.get("enabled"),
                 "attributes": user.get("attributes", {}),
-                "created": user.get("createdTimestamp")
+                "created": user.get("createdTimestamp"),
+                "roles": user_roles
             })
 
         return Response(clean_users, status=status.HTTP_200_OK)
+
 class UserDetailView(APIView):
     """
     Retrieve a single user by Keycloak ID (excluding sensitive fields).
     """
-    permission_classes = [AllowAny]
+    permission_classes =[AllowAnyRole]
 
     def get(self, request, keycloak_id):
         token = get_keycloak_admin_token()
@@ -269,7 +305,7 @@ class UserUpdateView(APIView):
     """
     Update a user by Keycloak ID.
     """
-    permission_classes = [AllowAny]
+    permission_classes =[AllowAnyRole]
 
     def put(self, request, keycloak_id):
         try:
@@ -295,14 +331,14 @@ class UserDeleteView(APIView):
     """
     Delete a user by Keycloak ID.
     """
-    permission_classes = [AllowAny]
+    permission_classes =[AllowAnyRole]
 
     def delete(self, request, keycloak_id):
         token = get_keycloak_admin_token()
         if not token:
             return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        url = f"{KEYCLOAK_BASE_URL}/admin/realms/{REALM}/users/{keycloak_id}"
+        url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users/{keycloak_id}"
         headers = {"Authorization": f"Bearer {token}"}
 
         response = requests.delete(url, headers=headers)
@@ -354,6 +390,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 class GoogleAuth(APIView):
+    permission_classes = [AllowAnyRole]
     @csrf_exempt
     def post(self, request):
         try:
@@ -506,53 +543,44 @@ def update_registration_progress(user_id, progress, data=None):
         raise Exception(f"❌ Failed to update progress: {response.status_code} - {response.text}")
 
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAnyRole]
 
     def post(self, request):
         data = request.data
         email = data.get("email")
         password = data.get("password")
         role_type = data.get("role")
-        username = email
 
         if not email or not password or not role_type:
             return Response({"message": "Email, password, and role are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create user in Keycloak
+        username = email
+
+        # 1. Create user in Keycloak
         result = create_keycloak_user(username, email, password)
         if not result["success"]:
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get Keycloak user ID
-        keycloak_user_id = get_keycloak_user_id(email)
+        # 2. Get user ID once after creation
+        keycloak_user_id = result.get("user_id") or get_keycloak_user_id(email)
         if not keycloak_user_id:
             return Response({"message": "Failed to retrieve user ID"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Assign role
+        # 3. Assign role (avoid re-checking user existence)
         assign_role_to_user(keycloak_user_id, role_type)
 
-        # Initialize registration step if missing
-        user_attributes = get_user_attributes(keycloak_user_id)
-        if not user_attributes.get("registrationProgress"):
-            initialize_registration_session(keycloak_user_id, "step1")
+        # 4. Store registration progress (optional, avoid refetching attributes unless needed)
+        initialize_registration_session(keycloak_user_id, "step1")
 
-        # Generate and store OTP
+        # 5. Generate and store OTP (inline)
         otp = self.generate_and_store_otp(keycloak_user_id)
         if not otp:
-            return Response({"message": "Failed to generate OTP. Try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"message": "Failed to generate OTP"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        try:
-            send_mail(
-                subject="Email Verification OTP",
-                message=f"Your OTP code for email verification is: {otp}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
-            )
-        except Exception as e:
-            return Response({"message": "User created but failed to send OTP", "error": str(e)}, status=500)
+        # 6. Send mail in a background thread
+        threading.Thread(target=self.send_otp_email, args=(email, otp)).start()
 
-        # Auto-login
+        # 7. Auto-login user (don't fetch admin token again)
         login_result = login_user(email, password)
         if login_result["success"]:
             return Response({
@@ -568,16 +596,22 @@ class RegisterView(APIView):
 
     def generate_and_store_otp(self, user_id):
         otp = str(random.randint(100000, 999999))
-        key = f"otp:{user_id}"
-        try:
-            cache.set(key, otp, timeout=300)
-            print(f"[✅ OTP STORED] {key} = {otp}")  # For debugging
-            return otp
-        except Exception as e:
-            print(f"[❌ Redis Error] Failed to store OTP for {user_id}: {e}")
-            return None
+        cache.set(f"otp:{user_id}", otp, timeout=300)
+        return otp
 
+    def send_otp_email(self, email, otp):
+        try:
+            send_mail(
+                subject="Email Verification OTP",
+                message=f"Your OTP code is: {otp}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f"[❌ OTP Email Failed] {e}")
 class LoginView(APIView):
+    permission_classes = [AllowAnyRole]
     def post(self, request):
         email = request.data.get("email")
         password = request.data.get("password")
@@ -585,15 +619,15 @@ class LoginView(APIView):
         if not email or not password:
             return Response({"error": "Email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Keycloak Login
+        # Login via Keycloak
         login_result = login_user(email, password)
         if not login_result.get("success"):
             return Response({"error": login_result.get("message", "Login failed.")}, status=status.HTTP_400_BAD_REQUEST)
 
         token_data = login_result["token"]
         access_token = token_data.get("access_token")
+        refresh_token = token_data.get("refresh_token")
 
-        # Decode JWT token
         try:
             decoded = jwt.decode(
                 access_token,
@@ -601,35 +635,38 @@ class LoginView(APIView):
                 algorithms=["RS256"],
                 options={"verify_aud": False},
             )
-        except InvalidTokenError as e:
+        except ExpiredSignatureError:
+            return Response({"error": "Token has expired"}, status=status.HTTP_401_UNAUTHORIZED)
+        except JWTError as e:
             return Response({"error": f"Token is invalid: {str(e)}"}, status=status.HTTP_401_UNAUTHORIZED)
 
         keycloak_id = decoded.get("sub")
         username = decoded.get("preferred_username", "unknown")
         roles = decoded.get("realm_access", {}).get("roles", [])
 
-        # Get admin token and fetch user info
-        admin_token = get_keycloak_admin_token()
-        user_info = get_keycloak_user_info(keycloak_id, admin_token)
+        # === PARALLEL TASKS ===
+        with ThreadPoolExecutor() as executor:
+            admin_token_future = executor.submit(get_keycloak_admin_token)
+            revoke_sessions_future = executor.submit(revoke_user_sessions, keycloak_id)
+
+            admin_token = admin_token_future.result()
+            user_info = get_keycloak_user_info(keycloak_id, admin_token)
+
         if not user_info:
             return Response({"error": "Failed to fetch user info from Keycloak."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # Extract values
+        # Extract additional user attributes
         attributes = user_info.get("attributes", {})
         email_from_info = user_info.get("email", email)
         is_verified = attributes.get("is_verified", ["false"])[0].lower() == "true"
         is_suspended = attributes.get("is_suspended", ["false"])[0].lower() == "true"
 
-        # Convert timestamp to ISO 8601
         created_timestamp = user_info.get("createdTimestamp")
         date_joined = datetime.fromtimestamp(created_timestamp / 1000.0).isoformat() if created_timestamp else None
 
-        # Optionally revoke old sessions
-        if keycloak_id:
-            revoke_user_sessions(keycloak_id)
-
         return Response({
             "token": access_token,
+            "refresh_token": refresh_token,
             "user_id": keycloak_id,
             "user": {
                 "username": username,
@@ -640,7 +677,6 @@ class LoginView(APIView):
                 "date_joined": date_joined,
             }
         }, status=status.HTTP_200_OK)
-
 def process_identity_verification(ch, method, properties, body):
     try:
         message = json.loads(body)
@@ -700,29 +736,48 @@ def process_identity_verification(ch, method, properties, body):
         print(f"❌ Unexpected error: {e}")
 
 
+def get_rabbitmq_channel(queue_name='identity_verification_queue'):
+    try:
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(
+                host='host.docker.internal',
+                port=5672,
+                heartbeat=600,
+                blocked_connection_timeout=300
+            )
+        )
+        channel = connection.channel()
+        channel.queue_declare(queue=queue_name, durable=True)
+        logger.info(f"✅ Connected to RabbitMQ and declared queue '{queue_name}'")
+        return connection, channel
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to RabbitMQ: {e}")
+        raise
+
 def start_identity_verification_consumer():
-    parameters = pika.URLParameters(CLOUDAMQP_URL)
-    connection = pika.BlockingConnection(parameters)
-    channel = connection.channel()
+    try:
+        connection, channel = get_rabbitmq_channel(queue_name='identity_verification_queue')
 
-    channel.queue_declare(queue='identity_verification_queue', durable=True)
+        channel.basic_consume(
+            queue='identity_verification_queue',
+            on_message_callback=process_identity_verification,
+            auto_ack=True
+        )
 
-    channel.basic_consume(
-        queue='identity_verification_queue',
-        on_message_callback=process_identity_verification,
-        auto_ack=True
-    )
+        logger.info(" [*] Waiting for identity verification messages...")
+        channel.start_consuming()
 
-    print(" [*] Waiting for identity verification messages...")
-    channel.start_consuming()
+    except Exception as e:
+        logger.error(f"❌ Consumer failed to start: {e}")
 
 def start_consumer_thread():
-    print("start_consumer_thread() called")
+    logger.info("📥 Starting consumer thread for identity verification...")
     consumer_thread = threading.Thread(target=start_identity_verification_consumer, daemon=True)
     consumer_thread.start()
-    print("Consumer thread started")
+    logger.info("✅ Consumer thread started")
 
 class Role(APIView):
+    permission_classes = [AllowAnyRole]
     def post(self, request):
         user_id = request.data.get("user_id")
         role = request.data.get("role")
@@ -737,6 +792,7 @@ class Role(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class PasswordResetRequestView(APIView):
+    permission_classes = [AllowAnyRole]
     def post(self, request):
         email = request.data.get("email")
         if not email:
@@ -762,7 +818,7 @@ class PasswordResetRequestView(APIView):
             return Response({"error": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
 
 class VerifyOTPView(APIView):
-    permission_classes = [AllowAny]  # No auth needed
+    permission_classes = [AllowAnyRole]
 
     def post(self, request):
         user_id = request.data.get("user_id")
@@ -787,12 +843,20 @@ class VerifyOTPView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+        # ✅ Verify email in Keycloak
+        email_verification_result = verify_user_email_by_id(user_id)
+        if not email_verification_result.get("success"):
+            return Response(
+                {"error": "OTP verified but email update failed", "details": email_verification_result.get("message")},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
         return Response(
-            {"message": "OTP verified successfully", "user_id": user_id},
+            {"message": "OTP and email verified successfully", "user_id": user_id},
             status=status.HTTP_200_OK
         )
 
-    def verify_otp(self,user_id, otp):
+    def verify_otp(self, user_id, otp):
         key = f"otp:{user_id}"
         try:
             stored_otp = cache.get(key)
@@ -808,6 +872,7 @@ class VerifyOTPView(APIView):
             raise
 
 class PasswordResetView(APIView):
+    permission_classes = [AllowAnyRole]
     def post(self, request):
         email = request.data.get("email")
         otp = request.data.get("otp")
@@ -834,7 +899,9 @@ class PasswordResetView(APIView):
             return Response({"error": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
 
 class LogoutView(APIView):
+    permission_classes = [AllowAnyRole]
     def post(self, request):
+        
         refresh_token = request.data.get('refresh_token')
 
         if not refresh_token:
@@ -849,54 +916,68 @@ class LogoutView(APIView):
             "refresh_token": refresh_token
         }
 
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+
         keycloak_logout_url = f"{settings.KEYCLOAK_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/logout"
 
         try:
-            response = requests.post(keycloak_logout_url, data=data, timeout=5)
+            response = requests.post(keycloak_logout_url, data=data, headers=headers, timeout=5)
 
             if response.status_code in [200, 204]:
                 return Response(
                     {"message": "Logged out successfully!"},
                     status=status.HTTP_200_OK
                 )
+
             elif response.status_code == 400:
+                try:
+                    details = response.json()
+                except ValueError:
+                    details = {"detail": "Bad Request"}
                 return Response(
-                    {"error": "Invalid refresh token or bad request.", "details": response.json()},
+                    {"error": "Invalid refresh token or bad request.", "details": details},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
             elif response.status_code == 401:
+                try:
+                    details = response.json()
+                except ValueError:
+                    details = {"detail": "Unauthorized"}
                 return Response(
-                    {"error": "Unauthorized. Check client credentials.", "details": response.json()},
+                    {"error": "Unauthorized. Check client credentials.", "details": details},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
+
             else:
-                print(f"Unexpected logout response: {response.status_code} - {response.text}")
                 return Response(
-                    {"error": "Unexpected error during logout.", "details": response.text},
+                    {
+                        "error": "Unexpected error during logout.",
+                        "status_code": response.status_code,
+                        "details": response.text
+                    },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
         except requests.exceptions.Timeout:
-            print("Keycloak logout request timed out.")
             return Response(
                 {"error": "Logout request timed out. Please try again later."},
                 status=status.HTTP_504_GATEWAY_TIMEOUT
             )
 
-        except requests.exceptions.ConnectionError as e:
-            print(f"Connection error during logout: {str(e)}")
+        except requests.exceptions.ConnectionError:
             return Response(
                 {"error": "Unable to connect to authentication server."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
 
         except requests.exceptions.RequestException as e:
-            print(f"Request exception during logout: {str(e)}")
             return Response(
-                {"error": "An error occurred while processing logout."},
+                {"error": "An error occurred while processing logout.", "details": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 class AccountDetailsView(APIView):
     def get(self, request):
         user = request.user

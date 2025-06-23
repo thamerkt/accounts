@@ -21,12 +21,17 @@ import requests
 from django.http import HttpResponse
 from django.shortcuts import redirect
 from django.contrib.auth import authenticate, login
-
+from django.core.cache import cache
 
 import requests
 from django.conf import settings  # assuming you're using Django
 
 def get_keycloak_admin_token():
+    cache_key = "keycloak_admin_token"
+    token = cache.get(cache_key)
+    if token:
+        return token
+
     url = f"{settings.KEYCLOAK_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token"
     data = {
         "client_id": settings.KEYCLOAK_CLIENT_ID,
@@ -35,12 +40,16 @@ def get_keycloak_admin_token():
         "password": settings.KEYCLOAK_ADMIN_PASSWORD,
         "grant_type": "password"
     }
-    print('data',data)
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
     response = requests.post(url, data=data, headers=headers)
     if response.ok:
-        return response.json().get("access_token")
+        token = response.json().get("access_token")
+        # Cache the token, assume expires in 5 minutes (adjust if needed)
+        # You can also parse `expires_in` from response if available
+        cache.set(cache_key, token, timeout=300)  # cache 5 min
+        return token
+
     raise Exception(f"[Token Error] {response.status_code}: {response.text}")
 
 def add_user_to_keycloak(email, first_name, last_name,role):
@@ -329,3 +338,110 @@ def get_user_attributes(user_id):
     else:
         raise Exception(f"❌ Failed to fetch user attributes: {response.status_code} - {response.text}")
 
+def update_keycloak_user_attributes(user_id, token, attributes):
+    """
+    Update custom attributes of a Keycloak user using their user ID.
+    """
+    url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users/{user_id}"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        # Fetch existing user data
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"❌ Failed to fetch user before update: {response.status_code} - {response.text}")
+            return False
+
+        user_data = response.json()
+
+        # Merge/override attributes
+        current_attrs = user_data.get("attributes", {})
+        current_attrs.update(attributes)
+        user_data["attributes"] = current_attrs
+
+        # PUT updated user object
+        put_response = requests.put(url, headers=headers, json=user_data)
+        if put_response.status_code in [200, 204]:
+            print(f"✅ User {user_id} attributes updated successfully.")
+            return True
+        else:
+            print(f"❌ Failed to update user: {put_response.status_code} - {put_response.text}")
+            return False
+
+    except Exception as e:
+        print(f"❌ Exception while updating user {user_id}: {str(e)}")
+        return False
+
+
+
+def get_all_keycloak_users():
+    """
+    Fetch all users from Keycloak realm.
+    """
+    token=get_keycloak_admin_token()
+    print("to",token)
+    url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        raise Exception(f"❌ Failed to fetch users: {response.status_code} - {response.text}")
+
+
+def delete_keycloak_user(user_id, admin_token):
+    """
+    Delete a Keycloak user by their user ID.
+    """
+    url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users/{user_id}"
+    headers = {
+        "Authorization": f"Bearer {admin_token}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.delete(url, headers=headers)
+    if response.status_code == 204:
+        print(f"✅ User {user_id} deleted successfully.")
+    else:
+        raise Exception(f"❌ Failed to delete user: {response.status_code} - {response.text}")
+def verify_user_email_by_id(user_id):
+    """
+    Set 'emailVerified' to True for a given user by user_id and return success status.
+    """
+    try:
+        token = get_keycloak_admin_token()
+
+        url = f"{settings.KEYCLOAK_URL}/admin/realms/{settings.KEYCLOAK_REALM}/users/{user_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        # Get the full user object first
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return {"success": False, "message": "Failed to fetch user details."}
+
+        user_data = response.json()
+        user_data["emailVerified"] = True
+
+        # PUT updated user data
+        update_response = requests.put(url, headers=headers, json=user_data)
+        if update_response.status_code in [200, 204]:
+            return {"success": True, "message": "Email verified successfully."}
+        else:
+            return {
+                "success": False,
+                "message": f"Failed to update email verification: {update_response.status_code} - {update_response.text}"
+            }
+
+    except Exception as e:
+        return {"success": False, "message": f"Exception occurred: {str(e)}"}
