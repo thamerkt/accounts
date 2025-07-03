@@ -16,3 +16,4 @@ django-oauth-toolkit
 google-auth
 python-dotenv
 oauth2_provider
+python-jose
