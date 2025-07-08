@@ -98,48 +98,45 @@ class UserSuspendView(APIView):
             print(f"Error: Unexpected error in UserSuspendView: {str(e)}")
             return Response({"error": f"Unexpected error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def publish_rabbitmq_event(self, event_type, email):
-        connection = None
-        try:
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(
-                    host='host.docker.internal',
-                    port=5672,
-                    heartbeat=600,
-                    blocked_connection_timeout=300
-                )
-            )
-            channel = connection.channel()
+def publish_rabbitmq_event(self, event_type, email):
+    connection = None
+    try:
+        amqp_url = 'amqps://poqribhv:LzwYFbmBXeyiQI0GveEEe-YQyDeH126c@kebnekaise.lmq.cloudamqp.com/poqribhv'
+        parameters = pika.URLParameters(amqp_url)
 
-            exchange_name = 'user_events'
-            channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
+        connection = pika.BlockingConnection(parameters)
+        channel = connection.channel()
 
-            message = {
-                'event': event_type,
-                'payload': {
-                    'email': email
-                }
+        exchange_name = 'user_events'
+        channel.exchange_declare(exchange=exchange_name, exchange_type='topic', durable=True)
+
+        message = {
+            'event': event_type,
+            'payload': {
+                'email': email
             }
+        }
 
-            channel.basic_publish(
-                exchange=exchange_name,
-                routing_key=event_type,
-                body=json.dumps(message),
-                properties=pika.BasicProperties(
-                    delivery_mode=2
-                )
+        channel.basic_publish(
+            exchange=exchange_name,
+            routing_key=event_type,
+            body=json.dumps(message),
+            properties=pika.BasicProperties(
+                delivery_mode=2  # Make message persistent
             )
-            print(f"Info: Published RabbitMQ event '{event_type}' for {email}")
+        )
+        print(f"Info: Published RabbitMQ event '{event_type}' for {email}")
 
-        except Exception as e:
-            print(f"Error: Failed to publish RabbitMQ message: {e}")
+    except Exception as e:
+        print(f"Error: Failed to publish RabbitMQ message: {e}")
 
-        finally:
-            if connection and connection.is_open:
-                try:
-                    connection.close()
-                except Exception as e:
-                    print(f"Warning: Failed to close RabbitMQ connection: {e}")
+    finally:
+        if connection and connection.is_open:
+            try:
+                connection.close()
+            except Exception as e:
+                print(f"Warning: Failed to close RabbitMQ connection: {e}")
+
 
 
 class ActiveUsersView(APIView):
@@ -738,14 +735,10 @@ def process_identity_verification(ch, method, properties, body):
 
 def get_rabbitmq_channel(queue_name='identity_verification_queue'):
     try:
-        connection = pika.BlockingConnection(
-            pika.ConnectionParameters(
-                host='host.docker.internal',
-                port=5672,
-                heartbeat=600,
-                blocked_connection_timeout=300
-            )
-        )
+        amqp_url = 'amqps://poqribhv:LzwYFbmBXeyiQI0GveEEe-YQyDeH126c@kebnekaise.lmq.cloudamqp.com/poqribhv'
+        parameters = pika.URLParameters(amqp_url)
+
+        connection = pika.BlockingConnection(parameters)
         channel = connection.channel()
         channel.queue_declare(queue=queue_name, durable=True)
         logger.info(f"✅ Connected to RabbitMQ and declared queue '{queue_name}'")
