@@ -7,7 +7,7 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from django.contrib.auth.models import AnonymousUser
 from django.conf import settings
-KEYCLOAK_URL = "http://host.docker.internal:8080"
+KEYCLOAK_URL = settings.KEYCLOAK_URL
 REALM = "my-kong"
 JWKS_URL = f"{KEYCLOAK_URL}/realms/{REALM}/protocol/openid-connect/certs"
 
