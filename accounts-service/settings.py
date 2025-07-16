@@ -20,7 +20,7 @@ SESSION_COOKIE_AGE = 3600
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': os.getenv('REDIS_URL', 'redis://red-d1miasidbo4c73fbugg0:6379'),
+        'LOCATION': 'redis://red-d1miasidbo4c73fbugg0:6379',
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
         }
