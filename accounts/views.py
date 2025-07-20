@@ -228,7 +228,7 @@ class UserListView(APIView):
             return Response({"error": "Failed to obtain Keycloak admin token."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         base_url = settings.KEYCLOAK_URL
-        realm = "my-kong"
+        realm = "master"
         url = f"{base_url}/admin/realms/{realm}/users"
         headers = {"Authorization": f"Bearer {token}"}
 
