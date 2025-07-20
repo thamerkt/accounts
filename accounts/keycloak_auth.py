@@ -7,7 +7,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.conf import settings
 
 KEYCLOAK_URL = settings.KEYCLOAK_URL
-REALM = "my-kong"
+REALM = "master"
 JWKS_URL = f"{KEYCLOAK_URL}/realms/{REALM}/protocol/openid-connect/certs"
 
 # Global cache
